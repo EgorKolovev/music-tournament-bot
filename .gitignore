@@ -1,0 +1,39 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python and tooling
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime data, audio, exports, and backups
+data/
+storage/
+uploads/
+exports/
+backups/
+*.log
+*.mp3
+*.m4a
+*.wav
+*.flac
+*.ogg
+*.zip
+*.dump
+*.sqlite*
+
+# Local document generation and OS files
+qa/
+qa-final/
+*.docx
+.DS_Store
