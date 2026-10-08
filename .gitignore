@@ -5,16 +5,9 @@
 *.pem
 *.key
 
-# Python and tooling
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+# Tooling
 .coverage
-htmlcov/
+coverage/
 
 # Runtime data, audio, exports, and backups
 data/
@@ -37,3 +30,8 @@ qa/
 qa-final/
 *.docx
 .DS_Store
+
+
+# Node
+node_modules/
+dist/
