@@ -81,6 +81,8 @@ export function openMatchSession(config: MatchSessionConfig): SessionStep {
 }
 
 export function handleIncoming(session: MatchSession, input: Incoming): SessionStep {
+  // Во время матча бот реагирует только на кнопки.
+  if (input.kind !== 'button') return { session, out: [] };
   const actor = actorOf(session.config, input.from);
   if (actor === undefined) return reply(session, input.from, 'Вы не участник этого матча');
   if (input.data === NOOP) return { session, out: [] };

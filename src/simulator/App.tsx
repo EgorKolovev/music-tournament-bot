@@ -1,24 +1,53 @@
 import { useEffect, useMemo, useState } from 'react';
+import type { IntakeSession } from '../bot/intakeSession.ts';
+import type { MatchSession } from '../bot/matchSession.ts';
 import type { Incoming } from '../bot/protocol.ts';
-import { demoConfig } from '../scenarios/demoConfig.ts';
+import type { Engine, Scenario } from '../scenarios/engine.ts';
+import { intakeEngine, matchEngine } from '../scenarios/engines.ts';
+import { INTAKE_SCENARIOS } from '../scenarios/intakeScenarios.ts';
+import { MATCH_SCENARIOS } from '../scenarios/matchScenarios.ts';
 import { initialFrame, nextFrame, runScenario, type Frame } from '../scenarios/runner.ts';
-import { SCENARIOS } from '../scenarios/scenarios.ts';
 import { ChatColumn } from './ChatColumn.tsx';
+import { IntakeInspector } from './IntakeInspector.tsx';
 import { Inspector } from './Inspector.tsx';
 
-const MANUAL = 'manual';
 const PLAY_INTERVAL_MS = 450;
 
+// Сессии движков разные; симулятор работает с ними одинаково через кадры.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyEngine = Engine<any>;
+
+const ENGINES: Record<Scenario['engine'], AnyEngine> = { match: matchEngine(), intake: intakeEngine() };
+
+const GROUPS: { engine: Scenario['engine']; label: string; scenarios: Scenario[] }[] = [
+  { engine: 'intake', label: 'Сбор треков', scenarios: INTAKE_SCENARIOS },
+  { engine: 'match', label: 'Матч', scenarios: MATCH_SCENARIOS },
+];
+
+const manualId = (engine: Scenario['engine']) => `manual:${engine}`;
+
+function framesFor(selection: string): Frame<unknown>[] {
+  const scenario = [...INTAKE_SCENARIOS, ...MATCH_SCENARIOS].find((s) => s.id === selection);
+  if (scenario) return runScenario(ENGINES[scenario.engine], scenario);
+  return [initialFrame(ENGINES[engineOf(selection)])];
+}
+
+function engineOf(selection: string): Scenario['engine'] {
+  const scenario = [...INTAKE_SCENARIOS, ...MATCH_SCENARIOS].find((s) => s.id === selection);
+  return scenario?.engine ?? (selection.split(':')[1] as Scenario['engine']);
+}
+
 export function App() {
-  const config = useMemo(() => demoConfig(), []);
-  const [scenarioId, setScenarioId] = useState<string>(SCENARIOS[0]!.id);
-  const [frames, setFrames] = useState<Frame[]>(() => runScenario(config, SCENARIOS[0]!));
+  const [selection, setSelection] = useState<string>(INTAKE_SCENARIOS[0]!.id);
+  const [frames, setFrames] = useState<Frame<unknown>[]>(() => framesFor(INTAKE_SCENARIOS[0]!.id));
   const [cursor, setCursor] = useState(0);
   const [playing, setPlaying] = useState(false);
 
-  const scenario = SCENARIOS.find((s) => s.id === scenarioId);
+  const engine = ENGINES[engineOf(selection)];
+  const scenario = [...INTAKE_SCENARIOS, ...MATCH_SCENARIOS].find((s) => s.id === selection);
   const frame = frames[cursor]!;
   const atEnd = cursor === frames.length - 1;
+  const workerEvent = useMemo(() => engine.workerEvent(frame.session), [engine, frame]);
 
   useEffect(() => {
     if (!playing) return;
@@ -30,45 +59,41 @@ export function App() {
     return () => clearTimeout(timer);
   }, [playing, atEnd, cursor]);
 
-  function selectScenario(id: string) {
+  function select(id: string) {
     setPlaying(false);
-    setScenarioId(id);
-    const selected = SCENARIOS.find((s) => s.id === id);
-    setFrames(selected ? runScenario(config, selected) : [initialFrame(config)]);
+    setSelection(id);
+    setFrames(framesFor(id));
     setCursor(0);
   }
 
-  // Ручное нажатие обрезает «будущее» и продолжает историю от текущего кадра.
-  function press(input: Incoming) {
+  // Ручное действие обрезает «будущее» и продолжает историю от текущего кадра.
+  function act(input: Incoming) {
     setPlaying(false);
-    const next = nextFrame(frame, input);
-    setFrames([...frames.slice(0, cursor + 1), next]);
+    setFrames([...frames.slice(0, cursor + 1), nextFrame(engine, frame, input)]);
     setCursor(cursor + 1);
-    if (!atEnd) setScenarioId(MANUAL);
+    if (!atEnd) setSelection(manualId(engine.id));
   }
-
-  const participants = [
-    { user: config.judge, role: 'Судья' },
-    { user: config.players[0], role: 'Игрок' },
-    { user: config.players[1], role: 'Игрок' },
-  ];
 
   return (
     <div className="app">
       <header className="toolbar">
         <div className="brand">
-          <h1>Симулятор матча</h1>
-          <span className="muted">бот без Telegram · dev</span>
+          <h1>Симулятор бота</h1>
+          <span className="muted">без Telegram · dev</span>
         </div>
         <label className="scenario-select">
           <span className="muted">Сценарий</span>
-          <select value={scenarioId} onChange={(e) => selectScenario(e.target.value)}>
-            {SCENARIOS.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.title}
-              </option>
+          <select value={selection} onChange={(e) => select(e.target.value)}>
+            {GROUPS.map((group) => (
+              <optgroup key={group.engine} label={group.label}>
+                {group.scenarios.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.title}
+                  </option>
+                ))}
+                <option value={manualId(group.engine)}>Вручную, с чистого листа</option>
+              </optgroup>
             ))}
-            <option value={MANUAL}>Вручную, с чистого листа</option>
           </select>
         </label>
         <div className="controls">
@@ -103,24 +128,38 @@ export function App() {
           }}
           aria-label="Шаг сценария"
         />
-        {scenario && <p className="description">{scenario.description}</p>}
+        <p className="description">
+          {scenario?.description ?? `${engine.title}: действуйте за участников сами.`}
+        </p>
       </header>
 
       <main className="layout">
         <section className="chats">
-          {participants.map(({ user, role }) => (
+          {engine.columns.map(({ user, caption, role }) => (
             <ChatColumn
               key={user.id}
               name={user.name}
-              role={role}
+              role={caption}
               chat={frame.chats[user.id]}
               toasts={frame.out.filter((o) => o.kind === 'toast' && o.to === user.id).map((o) => o.text)}
-              pressedData={frame.input?.from === user.id ? frame.input.data : undefined}
-              onPress={(data) => press({ kind: 'button', from: user.id, data })}
+              pressedData={frame.input?.kind === 'button' && frame.input.from === user.id ? frame.input.data : undefined}
+              catalog={engine.composer && role !== 'org' ? engine.catalog : undefined}
+              onInput={(input) => act({ ...input, from: user.id } as Incoming)}
             />
           ))}
         </section>
-        <Inspector frames={frames} cursor={cursor} onJump={(i) => (setPlaying(false), setCursor(i))} />
+        {engine.id === 'match' ? (
+          <Inspector frames={frames as Frame<MatchSession>[]} cursor={cursor} onJump={(i) => (setPlaying(false), setCursor(i))} />
+        ) : (
+          <IntakeInspector
+            frames={frames as Frame<IntakeSession>[]}
+            cursor={cursor}
+            onJump={(i) => (setPlaying(false), setCursor(i))}
+            names={new Map(engine.columns.map((c) => [c.user.id, c.user.name]))}
+            pendingJobs={workerEvent?.kind === 'worker' ? workerEvent.results.length : 0}
+            onWorker={() => workerEvent && act(workerEvent)}
+          />
+        )}
       </main>
     </div>
   );

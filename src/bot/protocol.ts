@@ -1,3 +1,5 @@
+import type { AudioFile } from '../domain/submission/intake.ts';
+
 // Транспортно-независимый протокол бота. Ядро получает Incoming и отдаёт Outgoing[];
 // Telegram-адаптер переводит их в Bot API, веб-симулятор рисует как чаты.
 
@@ -21,6 +23,9 @@ export interface OutgoingMessage {
   to: UserId;
   // Сообщение с тем же slot у того же получателя редактируется на месте (editMessageText).
   slot?: string;
+  // Пользователь писал после этого сообщения: старое удаляется и отправляется новое внизу чата,
+  // иначе правка останется незаметной выше по ленте.
+  bump?: boolean;
   text: string;
   audio?: AudioAttachment;
   buttons?: Button[][];
@@ -35,7 +40,16 @@ export interface OutgoingToast {
 
 export type Outgoing = OutgoingMessage | OutgoingToast;
 
-export type Incoming = { kind: 'button'; from: UserId; data: string };
+export type Incoming =
+  | { kind: 'button'; from: UserId; data: string }
+  | { kind: 'text'; from: UserId; text: string }
+  // Пересланная пачка аудио. Telegram присылает каждый файл отдельным update —
+  // адаптер собирает их по media_group_id и короткой паузе.
+  | { kind: 'files'; from: UserId; files: AudioFile[] }
+  // Внутреннее событие: worker закончил обработку файлов.
+  | { kind: 'worker'; results: { submissionId: string; ok: boolean }[] };
+
+export type UserIncoming = Exclude<Incoming, { kind: 'worker' }>;
 
 export const NOOP = 'noop';
 

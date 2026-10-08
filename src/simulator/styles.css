@@ -4,6 +4,7 @@
   --chat-bg: #dfe7ee;
   --bubble: #ffffff;
   --bubble-secret: #fff6dc;
+  --user-bubble: #e3f8d4;
   --text: #17212b;
   --muted: #6b7a89;
   --border: #d5dde5;
@@ -24,6 +25,7 @@
     --chat-bg: #0e1621;
     --bubble: #182533;
     --bubble-secret: #3a3220;
+    --user-bubble: #2b5278;
     --text: #e6edf3;
     --muted: #8a9aa9;
     --border: #253341;
@@ -473,4 +475,130 @@ code {
   .phone {
     height: 70vh;
   }
+}
+
+/* Сообщения пользователя и поле ввода */
+
+.bubble.user {
+  align-self: flex-end;
+  max-width: 85%;
+  background: var(--user-bubble);
+}
+
+.audio.forwarded + .audio.forwarded {
+  margin-top: 6px;
+}
+
+.file-info {
+  min-width: 0;
+}
+
+.file-info .audio-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer {
+  position: relative;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.composer-row {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+}
+
+.composer-row input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 7px 12px;
+  background: var(--bg);
+}
+
+.attach,
+.send {
+  border: 0;
+  background: transparent;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 6px;
+  color: var(--accent);
+}
+
+.send:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.picker {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: calc(100% + 8px);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  padding: 10px;
+  z-index: 2;
+}
+
+.picker-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.picker ul {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  overflow-y: auto;
+}
+
+.picker li label {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 4px 2px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.link {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.primary-button {
+  background: var(--accent);
+  color: var(--accent-text);
+  border: 0;
+  border-radius: 8px;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+
+.primary-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.worker-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
 }

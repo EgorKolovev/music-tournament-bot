@@ -1,3 +1,14 @@
+# Dependencies and build output
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+
 # Local configuration and secrets
 .env
 .env.*
@@ -5,17 +16,23 @@
 *.pem
 *.key
 
-# Tooling
-.coverage
-coverage/
+# IDE and editor settings — each developer keeps their own
+.idea/
+*.iml
+.vscode/
+*.swp
+*~
 
-# Runtime data, audio, exports, and backups
+# OS files
+.DS_Store
+Thumbs.db
+
+# Runtime data, audio, exports, and backups — music and user data never go to the repo
 data/
 storage/
 uploads/
 exports/
 backups/
-*.log
 *.mp3
 *.m4a
 *.wav
@@ -25,13 +42,7 @@ backups/
 *.dump
 *.sqlite*
 
-# Local document generation and OS files
+# Local document generation
 qa/
 qa-final/
 *.docx
-.DS_Store
-
-
-# Node
-node_modules/
-dist/

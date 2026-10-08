@@ -1,11 +1,11 @@
-import { useEffect, useRef } from 'react';
-import { actionOf } from '../bot/chat.ts';
+import type { MatchSession } from '../bot/matchSession.ts';
 import { liveScore } from '../domain/match/match.ts';
 import { formatPoints } from '../domain/match/ruleset.ts';
 import type { Frame } from '../scenarios/runner.ts';
+import { StepLog } from './StepLog.tsx';
 
 interface Props {
-  frames: Frame[];
+  frames: Frame<MatchSession>[];
   cursor: number;
   onJump: (index: number) => void;
 }
@@ -17,11 +17,6 @@ export function Inspector({ frames, cursor, onJump }: Props) {
   const [p0, p1] = config.players;
   const score = liveScore(match);
   const names = new Map([config.judge, ...config.players].map((u) => [u.id, u.name]));
-  const activeRef = useRef<HTMLLIElement>(null);
-
-  useEffect(() => {
-    activeRef.current?.scrollIntoView({ block: 'nearest' });
-  }, [cursor]);
 
   return (
     <aside className="inspector">
@@ -67,29 +62,7 @@ export function Inspector({ frames, cursor, onJump }: Props) {
         )}
       </section>
 
-      <section className="log-section">
-        <h2>Журнал нажатий</h2>
-        <ol className="log">
-          {frames.map((f, i) => (
-            <li
-              key={i}
-              ref={i === cursor ? activeRef : undefined}
-              className={`${i === cursor ? 'active' : ''}${i > cursor ? ' future' : ''}`}
-              onClick={() => onJump(i)}
-            >
-              <span className="muted">{i}</span>{' '}
-              {f.input ? (
-                <>
-                  {names.get(f.input.from)}: <code>{actionOf(f.input.data)}</code>
-                  {f.out.some((o) => o.kind === 'toast') && <span className="tag warn">отказ</span>}
-                </>
-              ) : (
-                'старт матча'
-              )}
-            </li>
-          ))}
-        </ol>
-      </section>
+      <StepLog frames={frames} cursor={cursor} names={names} onJump={onJump} />
     </aside>
   );
 }

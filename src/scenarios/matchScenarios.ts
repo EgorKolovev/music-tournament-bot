@@ -1,18 +1,10 @@
 import type { MatchPhase } from '../domain/match/match.ts';
+import type { Scenario, ScenarioStep } from './engine.ts';
 
-export type Role = 'judge' | 'p0' | 'p1';
-
-export interface ScenarioStep {
-  as: Role;
-  // Действие кнопки без суффикса версии: ready, issue, start, aw:a:0, aw:t:1, undo, close, none, cancel, pause, resume, confirm.
-  press: string;
-}
-
-export interface Scenario {
-  id: string;
-  title: string;
-  description: string;
-  steps: ScenarioStep[];
+// Шаги матча жмут кнопки по действию без суффикса версии:
+// ready, issue, start, aw:a:0, aw:t:1, undo, close, none, cancel, pause, resume, confirm.
+export interface MatchScenario extends Scenario {
+  engine: 'match';
   expect: Pick<MatchPhase, 'kind'> & { winner?: 0 | 1 };
 }
 
@@ -31,9 +23,10 @@ function repeat(times: number, steps: ScenarioStep[]): ScenarioStep[] {
   return Array.from({ length: times }, () => steps).flat();
 }
 
-export const SCENARIOS: Scenario[] = [
+export const MATCH_SCENARIOS: MatchScenario[] = [
   {
     id: 'quick-win',
+    engine: 'match',
     title: 'Быстрая победа',
     description: 'Аня угадывает всё пять треков подряд и доходит до 10,5. Подтверждают судья и оба игрока.',
     steps: [...everyoneReady, ...repeat(5, track('aw:a:0', 'aw:t:0')), ...confirmAll],
@@ -41,6 +34,7 @@ export const SCENARIOS: Scenario[] = [
   },
   {
     id: 'threshold-tie',
+    engine: 'match',
     title: 'Порог вничью 9,3 : 9,3',
     description:
       'При 8,4 : 8,1 Аня берёт исполнителя, Борис — название. Оба перешли 9,0, но счёт равный, поэтому игра продолжается.',
@@ -56,6 +50,7 @@ export const SCENARIOS: Scenario[] = [
   },
   {
     id: 'undo-audio-error-pause',
+    engine: 'match',
     title: 'Отмена, ошибка аудио, пауза',
     description:
       'Судья ошибся кнопкой и отменил её, потом трек сломался и был технически отменён, затем пауза и продолжение.',
@@ -79,6 +74,7 @@ export const SCENARIOS: Scenario[] = [
   },
   {
     id: 'tiebreak-win',
+    engine: 'match',
     title: 'Дополнительная серия',
     description: '20 треков без угадываний, 0 : 0. В дополнительной серии первый неравный итог завершает матч.',
     steps: [...everyoneReady, ...repeat(21, track()), ...track('aw:a:1'), ...confirmAll],
@@ -86,6 +82,7 @@ export const SCENARIOS: Scenario[] = [
   },
   {
     id: 'tiebreak-suspended',
+    engine: 'match',
     title: 'Равенство после серии',
     description: '25 треков без угадываний. Жребия нет: матч приостанавливается до решения организатора.',
     steps: [...everyoneReady, ...repeat(25, track())],

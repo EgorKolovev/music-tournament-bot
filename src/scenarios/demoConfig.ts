@@ -6,6 +6,7 @@ export const DEMO_USERS = {
   judge: { id: 'u-vika', name: 'Вика' },
   p0: { id: 'u-anya', name: 'Аня' },
   p1: { id: 'u-boris', name: 'Борис' },
+  org: { id: 'u-org', name: 'Организатор' },
 } as const;
 
 const OTHER = 'u-other';

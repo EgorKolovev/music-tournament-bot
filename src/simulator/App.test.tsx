@@ -3,10 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { App } from './App.tsx';
 
 describe('симулятор', () => {
-  it('рендерит три чата и панель судьи', () => {
+  it('рендерит чаты участников и организатора', () => {
     const html = renderToString(<App />);
-    expect(html).toContain('Симулятор матча');
-    for (const name of ['Вика', 'Аня', 'Борис']) expect(html).toContain(name);
-    expect(html).toContain('Все на месте');
+    expect(html).toContain('Симулятор бота');
+    for (const name of ['Аня', 'Борис', 'Организатор']) expect(html).toContain(name);
+    expect(html).toContain('Пересылай аудио пачкой');
   });
 });
