@@ -1,4 +1,4 @@
-import type { Ruleset } from './ruleset.ts';
+import { regularTracks, type Ruleset } from './ruleset.ts';
 
 // Чистое ядро отборочного матча: состояние + команда → новое состояние или ошибка.
 // Ничего не знает о Telegram, базе и выборе песен (docs/architecture.md, разделы 1, 3, 8).
@@ -36,7 +36,10 @@ export type MatchPhase =
   | { kind: 'track'; track: CurrentTrack }
   | { kind: 'decided'; winner: PlayerSlot; judgeConfirmed: boolean; playersConfirmed: [boolean, boolean] }
   | { kind: 'finished'; winner: PlayerSlot }
-  | { kind: 'suspended' };
+  // Матч остановлен: подходящие песни закончились. Ничья сама по себе матч не останавливает.
+  | { kind: 'suspended'; reason: SuspendReason };
+
+export type SuspendReason = 'songs_exhausted';
 
 export interface MatchState {
   ruleset: Ruleset;
@@ -59,6 +62,7 @@ export type MatchCommand =
   | { type: 'cancelTrack'; reason: string }
   | { type: 'pause' }
   | { type: 'resume' }
+  | { type: 'suspend'; reason: SuspendReason }
   | { type: 'confirmResult'; who: Actor };
 
 export type MatchError =
@@ -128,6 +132,10 @@ export function applyCommand(state: MatchState, command: MatchCommand): MatchRes
 
     case 'resume':
       return state.paused ? next({ paused: false }) : fail('not_paused');
+
+    case 'suspend':
+      if (phase.kind !== 'between_tracks') return fail('wrong_phase');
+      return next({ phase: { kind: 'suspended', reason: command.reason } });
 
     case 'markReady': {
       if (phase.kind !== 'lobby') return fail('wrong_phase');
@@ -239,23 +247,13 @@ function closeTrack(state: MatchState, next: (patch: Partial<MatchState>) => Mat
 export function resolveAfterClose(closedTracks: readonly ClosedTrack[], ruleset: Ruleset): MatchPhase {
   const [a, b] = scoreOf(closedTracks, ruleset);
   const leader: PlayerSlot | null = a > b ? 0 : b > a ? 1 : null;
-  const played = closedTracks.length;
-  const decided = (winner: PlayerSlot): MatchPhase => ({
-    kind: 'decided',
-    winner,
-    judgeConfirmed: false,
-    playersConfirmed: [false, false],
-  });
+  if (leader === null) return { kind: 'between_tracks' };
 
-  if (played <= ruleset.regularTrackLimit) {
-    if (leader !== null && Math.max(a, b) >= ruleset.winThreshold) return decided(leader);
-    if (played === ruleset.regularTrackLimit && leader !== null) return decided(leader);
-    return { kind: 'between_tracks' };
-  }
-
-  // Дополнительная серия: первый неравный итог завершает матч.
-  if (leader !== null) return decided(leader);
-  if (played >= ruleset.regularTrackLimit + ruleset.tiebreakTrackLimit) return { kind: 'suspended' };
+  const decided: MatchPhase = { kind: 'decided', winner: leader, judgeConfirmed: false, playersConfirmed: [false, false] };
+  const { format } = ruleset;
+  if (format.kind === 'first_to' && Math.max(a, b) >= format.winThreshold) return decided;
+  // После основной части, включая дополнительные треки, первый неравный счёт завершает матч.
+  if (closedTracks.length >= regularTracks(format)) return decided;
   return { kind: 'between_tracks' };
 }
 

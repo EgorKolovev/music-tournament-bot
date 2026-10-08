@@ -28,6 +28,8 @@ export interface OutgoingMessage {
   bump?: boolean;
   text: string;
   audio?: AudioAttachment;
+  // Файл для скачивания (sendDocument): офлайн-комплект, таблица ответов.
+  document?: { fileName: string; mimeType: string; content: string };
   buttons?: Button[][];
 }
 

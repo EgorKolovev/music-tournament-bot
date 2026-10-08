@@ -1,16 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  acceptedSongs,
+  activeCount,
   completeProcessing,
   createIntake,
   DEFAULT_INTAKE_RULES,
-  moveToOtherPool,
-  poolCount,
   receiveFiles,
   remove,
   setTitle,
   statusOf,
   submissionsOf,
-  swapPools,
   type AudioFile,
   type IntakeState,
 } from './intake.ts';
@@ -35,18 +34,22 @@ function songs(count: number, prefix: string): AudioFile[] {
   return Array.from({ length: count }, (_, i) => audio(`${prefix} Artist ${i}`, `${prefix} Song ${i}`));
 }
 
+function processAll(state: IntakeState): IntakeState {
+  for (const s of state.submissions) state = completeProcessing(state, s.id, true);
+  return state;
+}
+
 const ANYA = 'anya';
 const BORIS = 'boris';
 
 function statuses(state: IntakeState, owner: string) {
-  return submissionsOf(state, owner).map((s) => [s.pool, statusOf(s), s.rejection]);
+  return submissionsOf(state, owner).map((s) => [statusOf(s), s.rejection]);
 }
 
 describe('приём пачки', () => {
-  it('первые 6 идут в отбор, следующие 4 в финал, лишние не занимают квоту', () => {
+  it('принимается до 10 треков, лишние не занимают квоту', () => {
     const state = receiveFiles(createIntake(DEFAULT_INTAKE_RULES), ANYA, songs(11, 'a'));
-    expect(poolCount(state, ANYA, 'main')).toBe(6);
-    expect(poolCount(state, ANYA, 'final')).toBe(4);
+    expect(activeCount(state, ANYA)).toBe(10);
     expect(submissionsOf(state, ANYA).at(-1)?.rejection).toBe('quota_full');
   });
 
@@ -68,8 +71,8 @@ describe('приём пачки', () => {
       audio('Coldplay', 'Viva la Vida', { mimeType: 'audio/ogg' }),
     ]);
     expect(statuses(state, ANYA)).toEqual([
-      [null, 'rejected', 'too_large'],
-      [null, 'rejected', 'bad_format'],
+      ['rejected', 'too_large'],
+      ['rejected', 'bad_format'],
     ]);
   });
 
@@ -78,58 +81,44 @@ describe('приём пачки', () => {
     const [submission] = submissionsOf(state, ANYA);
     expect(statusOf(submission!)).toBe('processing');
     state = completeProcessing(state, submission!.id, false);
-    expect(statuses(state, ANYA)).toEqual([[null, 'rejected', 'corrupt']]);
+    expect(statuses(state, ANYA)).toEqual([['rejected', 'corrupt']]);
+    expect(activeCount(state, ANYA)).toBe(0);
   });
 });
 
 describe('дубли', () => {
-  it('песня другого участника — дубль, но второй автор тоже считается знающим её', () => {
+  it('песня другого участника принимается молча и склеивается, оба считаются знающими', () => {
     let state = receiveFiles(createIntake(DEFAULT_INTAKE_RULES), ANYA, [audio('The Beatles', 'Hey Jude')]);
-    state = receiveFiles(state, BORIS, [audio('Beatles', 'Hey Jude (Remastered 2015)')]);
-    expect(statuses(state, BORIS)).toEqual([[null, 'rejected', 'duplicate_other']]);
-    expect(state.songs[songKey('Beatles', 'Hey Jude')]?.knownBy).toEqual([ANYA, BORIS]);
+    state = processAll(receiveFiles(state, BORIS, [audio('Beatles', 'Hey Jude (Remastered 2015)')]));
+    expect(statuses(state, BORIS)).toEqual([['accepted', null]]);
+    expect(activeCount(state, BORIS)).toBe(1);
+    const library = acceptedSongs(state);
+    expect(library).toHaveLength(1);
+    expect(library[0]?.knownBy).toEqual([ANYA, BORIS]);
   });
 
   it('после удаления заявки знакомство с песней сохраняется', () => {
     let state = receiveFiles(createIntake(DEFAULT_INTAKE_RULES), ANYA, [audio('Muse', 'Uprising')]);
     state = remove(state, submissionsOf(state, ANYA)[0]!.id);
-    expect(state.songs[songKey('Muse', 'Uprising')]).toEqual({ submissionId: null, knownBy: [ANYA] });
-    state = receiveFiles(state, BORIS, [audio('Muse', 'Uprising')]);
-    expect(statusOf(submissionsOf(state, BORIS)[0]!)).toBe('processing');
+    expect(state.songs[songKey('Muse', 'Uprising')]).toEqual({ submissionIds: [], knownBy: [ANYA] });
+    expect(acceptedSongs(state)).toEqual([]);
   });
 
-  it('повторная пересылка того же файла — свой дубль', () => {
+  it('своя повторная песня отклоняется: и тот же файл, и та же песня в другом файле', () => {
     const file = audio('ABBA', 'Dancing Queen');
-    const state = receiveFiles(createIntake(DEFAULT_INTAKE_RULES), ANYA, [file, file]);
-    expect(statuses(state, ANYA).map((s) => s[2])).toEqual([null, 'duplicate_own']);
+    const state = receiveFiles(createIntake(DEFAULT_INTAKE_RULES), ANYA, [
+      file,
+      file,
+      audio('Abba', 'Dancing Queen (Remastered)'),
+    ]);
+    expect(statuses(state, ANYA).map((s) => s[1])).toEqual([null, 'duplicate_own', 'duplicate_own']);
   });
 
-  it('название, введённое вручную, тоже проверяется на дубль', () => {
+  it('название, введённое вручную, тоже склеивается с существующей песней', () => {
     let state = receiveFiles(createIntake(DEFAULT_INTAKE_RULES), ANYA, [audio('Би-2', 'Полковнику никто не пишет')]);
     state = receiveFiles(state, BORIS, [audio(undefined, undefined, { fileName: 'track_04.mp3' })]);
-    state = setTitle(state, submissionsOf(state, BORIS)[0]!.id, fromText('Би 2 — Полковнику никто не пишет')!);
-    expect(submissionsOf(state, BORIS)[0]?.rejection).toBe('duplicate_other');
-  });
-});
-
-describe('пулы', () => {
-  it('перенос в пул со свободным местом', () => {
-    let state = receiveFiles(createIntake(DEFAULT_INTAKE_RULES), ANYA, songs(2, 'a'));
-    const result = moveToOtherPool(state, submissionsOf(state, ANYA)[0]!.id);
-    expect(result.ok).toBe(true);
-    if (result.ok) state = result.state;
-    expect(poolCount(state, ANYA, 'final')).toBe(1);
-  });
-
-  it('при заполненных пулах треки меняются местами', () => {
-    let state = receiveFiles(createIntake(DEFAULT_INTAKE_RULES), ANYA, songs(10, 'a'));
-    const [first] = submissionsOf(state, ANYA);
-    const last = submissionsOf(state, ANYA).at(-1)!;
-    expect(moveToOtherPool(state, first!.id)).toEqual({ ok: false, error: 'target_full' });
-    const result = swapPools(state, first!.id, last.id);
-    if (!result.ok) throw new Error(result.error);
-    state = result.state;
-    expect(submissionsOf(state, ANYA)[0]?.pool).toBe('final');
-    expect(submissionsOf(state, ANYA).at(-1)?.pool).toBe('main');
+    state = processAll(setTitle(state, submissionsOf(state, BORIS)[0]!.id, fromText('Би 2 — Полковнику никто не пишет')!));
+    expect(statuses(state, BORIS)).toEqual([['accepted', null]]);
+    expect(acceptedSongs(state)[0]?.knownBy).toEqual([ANYA, BORIS]);
   });
 });

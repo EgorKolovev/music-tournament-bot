@@ -91,6 +91,7 @@ function BotBubble({
         </div>
       )}
       {message.text && <div className="text">{message.text}</div>}
+      {message.document && <DocumentLink document={message.document} />}
       {message.buttons && (
         <div className="keyboard">
           {message.buttons.map((row, r) => (
@@ -115,6 +116,19 @@ function BotBubble({
       </div>
       {violations.length > 0 && <div className="violation">⚠ Лимит Telegram: {violations.join('; ')}</div>}
     </div>
+  );
+}
+
+function DocumentLink({ document }: { document: NonNullable<BotChatMessage['document']> }) {
+  const href = `data:${document.mimeType};charset=utf-8,${encodeURIComponent('\uFEFF' + document.content)}`;
+  return (
+    <a className="document" href={href} download={document.fileName}>
+      <span aria-hidden>📄</span>
+      <span>
+        <span className="audio-title">{document.fileName}</span>
+        <span className="muted small"> · {Math.ceil(document.content.length / 1024)} КБ · скачать</span>
+      </span>
+    </a>
   );
 }
 

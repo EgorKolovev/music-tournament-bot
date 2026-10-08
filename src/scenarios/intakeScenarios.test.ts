@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { IntakeSession } from '../bot/intakeSession.ts';
+import { admittedPlayers, readyForDraw, type IntakeSession } from '../bot/intakeSession.ts';
 import { limitViolations } from '../bot/protocol.ts';
-import { statusOf, submissionsOf } from '../domain/submission/intake.ts';
+import { acceptedSongs, statusOf, submissionsOf } from '../domain/submission/intake.ts';
 import { songKey } from '../domain/submission/titles.ts';
 import { DEMO_USERS } from './demoConfig.ts';
 import { intakeEngine } from './engines.ts';
@@ -17,13 +17,13 @@ function run(id: string): Frame<IntakeSession>[] {
 function summary(frame: Frame<IntakeSession>, owner: string) {
   return submissionsOf(frame.session.intake, owner).map((s) => [
     s.meta ? `${s.meta.artist} — ${s.meta.title}` : s.file.fileName,
-    s.pool,
     statusOf(s),
+    s.rejection,
   ]);
 }
 
-function listText(frame: Frame<IntakeSession>, userId: string): string {
-  const message = frame.chats[userId]?.messages.find((m) => m.author === 'bot' && m.slot === 'list');
+function botText(frame: Frame<IntakeSession>, userId: string, slot: string): string {
+  const message = frame.chats[userId]?.messages.find((m) => m.author === 'bot' && m.slot === slot);
   return message?.author === 'bot' ? message.text : '';
 }
 
@@ -47,75 +47,92 @@ describe.each(INTAKE_SCENARIOS)('сценарий «$title»', (scenario) => {
       expect(last?.author === 'bot' && last.slot).toBe('list');
     }
   });
+
+  it('участник никогда не узнаёт, что его песню уже прислал кто-то другой', () => {
+    for (const frame of frames) {
+      for (const id of [DEMO_USERS.p0.id, DEMO_USERS.p1.id]) {
+        const text = botText(frame, id, 'list');
+        expect(text).not.toMatch(/друг|уже есть у/i);
+      }
+    }
+  });
 });
 
 describe('пачка из 10 с проблемами', () => {
   const frames = run('intake-batch');
 
-  it('бот чистит теги, разбирает имя файла и спрашивает только про непонятные треки', () => {
+  it('бот чистит теги, разбирает имя файла и спрашивает только про непонятные песни', () => {
     expect(summary(frames[2]!, DEMO_USERS.p0.id)).toEqual([
-      ['Queen — Bohemian Rhapsody', 'main', 'accepted'],
-      ['Кино — Группа крови', 'main', 'accepted'],
-      ['ABBA — Dancing Queen', 'main', 'accepted'],
-      ['Сплин — Выхода нет', 'main', 'accepted'],
-      ['track_04.mp3', 'main', 'needs_title'],
-      ['Daft Punk — Get Lucky', 'main', 'accepted'],
-      ['Linkin Park — Numb', 'final', 'accepted'],
-      ['audio_2023-11-02.m4a', 'final', 'needs_title'],
-      ['Radiohead — Creep', null, 'rejected'],
-      ['Агата Кристи — Как на войне', 'final', 'accepted'],
+      ['Queen — Bohemian Rhapsody', 'accepted', null],
+      ['Кино — Группа крови', 'accepted', null],
+      ['ABBA — Dancing Queen', 'accepted', null],
+      ['Сплин — Выхода нет', 'accepted', null],
+      ['track_04.mp3', 'needs_title', null],
+      ['Daft Punk — Get Lucky', 'accepted', null],
+      ['Linkin Park — Numb', 'accepted', null],
+      ['audio_2023-11-02.m4a', 'needs_title', null],
+      ['Radiohead — Creep', 'rejected', 'too_large'],
+      ['Агата Кристи — Как на войне', 'accepted', null],
     ]);
-    expect(listText(frames[2]!, DEMO_USERS.p0.id)).toContain('✏️ Трек 5 (track_04.mp3): не нашёл название.');
+    expect(botText(frames[2]!, DEMO_USERS.p0.id, 'list')).toContain('✏️ Песня 5 (track_04.mp3): не нашёл название.');
   });
 
-  it('ответ без разделителя не принимается, бот повторяет формат', () => {
-    expect(listText(frames[3]!, DEMO_USERS.p0.id)).toContain('Не разобрал «Полковнику никто не пишет»');
+  it('ответ без разделителя не принимается', () => {
+    expect(botText(frames[3]!, DEMO_USERS.p0.id, 'list')).toContain('Не разобрал «Полковнику никто не пишет»');
   });
 
-  it('после ответов и замены все 10 приняты', () => {
+  it('после ответов и замены все 10 приняты, дубли с другими участниками склеены', () => {
     const last = frames.at(-1)!;
-    expect(summary(last, DEMO_USERS.p0.id).every(([, , status]) => status === 'accepted')).toBe(true);
-    expect(summary(last, DEMO_USERS.p0.id)).toHaveLength(10);
-    expect(listText(last, DEMO_USERS.p0.id)).toContain('✅ Все 10 треков приняты');
+    expect(summary(last, DEMO_USERS.p0.id).filter(([, status]) => status === 'accepted')).toHaveLength(10);
+    expect(botText(last, DEMO_USERS.p0.id, 'list')).toContain('✅ Все 10 песен приняты');
+    const queen = last.session.intake.songs[songKey('Queen', 'Bohemian Rhapsody')];
+    expect(queen?.knownBy).toContain(DEMO_USERS.p0.id);
+    expect(queen?.knownBy).toHaveLength(2);
   });
 });
 
-describe('дубли и битый файл', () => {
+describe('дубли и битые файлы', () => {
   const last = run('intake-duplicates').at(-1)!;
 
-  it('дубль и битый файл не занимают квоту, замены приняты', () => {
+  it('чужой дубль принят, свой повтор и плохие файлы отклонены', () => {
     expect(summary(last, DEMO_USERS.p1.id)).toEqual([
-      ['Nirvana — Smells Like Teen Spirit', 'main', 'accepted'],
-      ['Земфира — Искала', 'main', 'accepted'],
-      ['Rammstein — Du hast', 'main', 'accepted'],
+      ['Beatles — Hey Jude', 'accepted', null],
+      ['Nirvana — Smells Like Teen Spirit', 'accepted', null],
+      ['Nirvana — Smells Like Teen Spirit', 'rejected', 'duplicate_own'],
+      ['Земфира — Искала', 'accepted', null],
+      ['Rammstein — Du hast', 'accepted', null],
     ]);
   });
 
-  it('Борис записан знающим «Hey Jude», хотя его заявка не принята', () => {
-    expect(last.session.intake.songs[songKey('Beatles', 'Hey Jude')]?.knownBy).toEqual([
-      DEMO_USERS.p0.id,
-      DEMO_USERS.p1.id,
-    ]);
-  });
-
-  it('участник не узнаёт, кто прислал ту же песню', () => {
-    const borisTexts = last.chats[DEMO_USERS.p1.id]!.messages.map((m) => (m.author === 'bot' ? m.text : ''));
-    expect(borisTexts.join('\n')).not.toContain(DEMO_USERS.p0.name);
+  it('Борис записан знающим «Hey Jude» вместе с остальными авторами', () => {
+    const entry = last.session.intake.songs[songKey('Beatles', 'Hey Jude')];
+    expect(entry?.knownBy).toContain(DEMO_USERS.p1.id);
+    expect(entry?.submissionIds.length).toBeGreaterThan(1);
   });
 });
 
-describe('перенос между пулами и правка', () => {
-  it('трек переехал в финал, название исправлено, лишний убран', () => {
-    expect(summary(run('intake-pools').at(-1)!, DEMO_USERS.p0.id)).toEqual([
-      ['Queen — Bohemian Rhapsody', 'final', 'accepted'],
-      ['Кино — Группа крови', 'main', 'accepted'],
-      ['ABBA — Dancing Queen', 'main', 'accepted'],
-      ['Nirvana — Smells Like Teen Spirit', 'main', 'accepted'],
-      ['Земфира — Искала', 'main', 'accepted'],
-      ['Rammstein — Du hast', 'final', 'accepted'],
-      ['Агата Кристи — Как на войне', 'final', 'accepted'],
-      ['ДДТ — Что такое осень', 'final', 'accepted'],
-      ['Сплин — Выхода нет', 'main', 'accepted'],
-    ]);
+describe('закрытие сбора и пулы', () => {
+  const frames = run('intake-close');
+  const last = frames.at(-1)!;
+
+  it('пулы разделены без пересечений и покрывают всю библиотеку', () => {
+    const split = last.session.closed!.split;
+    expect(new Set([...split.final, ...split.main]).size).toBe(acceptedSongs(last.session.intake).length);
+    expect(split.final.length).toBeGreaterThanOrEqual(110);
+  });
+
+  it('после закрытия новые файлы не принимаются', () => {
+    expect(summary(last, DEMO_USERS.p1.id)).toHaveLength(3);
+    expect(botText(frames[5]!, DEMO_USERS.p1.id, 'list')).toContain('Сбор уже закрыт');
+  });
+
+  it('жеребьёвка доступна только после решений по всем недобравшим', () => {
+    expect(readyForDraw(frames[6]!.session)).toBe(false);
+    expect(readyForDraw(last.session)).toBe(true);
+    const admitted = admittedPlayers(last.session).map((p) => p.name);
+    expect(admitted).toContain('Борис');
+    expect(admitted).not.toContain('Оля');
+    expect(admitted).toHaveLength(19);
+    expect(botText(last, DEMO_USERS.org.id, 'intake')).toContain('Готово к жеребьёвке: 19 игроков ✅');
   });
 });

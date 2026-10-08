@@ -1,19 +1,18 @@
 import { fromFileName, fromTags, songKey, type SongMeta } from './titles.ts';
 
-// Сбор заявок: квоты двух пулов, проверка файлов, дубли и учёт знакомства с песней
-// (docs/architecture.md, разделы 2, 5 и 7). Скачивание и ffmpeg — во внешнем worker,
+// Сбор заявок: квота, проверка файлов, склейка дублей и учёт знакомства с песней
+// (docs/decisions/2026-10-08-mechanics-revision.md, разделы 4–6). Пул игрок не выбирает:
+// бот делит песни после закрытия сбора (pools.ts). Скачивание и ffmpeg — во внешнем worker,
 // сюда приходит только его вердикт.
 
-export type Pool = 'main' | 'final';
-
 export interface IntakeRules {
-  quota: Record<Pool, number>;
+  maxSubmissions: number;
   maxBytes: number;
   acceptedMimeTypes: readonly string[];
 }
 
 export const DEFAULT_INTAKE_RULES: IntakeRules = {
-  quota: { main: 6, final: 4 },
+  maxSubmissions: 10,
   // Предел getFile облачного Bot API.
   maxBytes: 20 * 1024 * 1024,
   acceptedMimeTypes: ['audio/mpeg', 'audio/mp3', 'audio/mp4', 'audio/x-m4a', 'audio/m4a', 'audio/aac'],
@@ -32,14 +31,13 @@ export interface AudioFile {
   title?: string;
 }
 
-export type RejectReason = 'too_large' | 'bad_format' | 'corrupt' | 'duplicate_other' | 'duplicate_own' | 'quota_full';
+// Чужой дубль не отклоняется: игрок не должен узнавать, что песня уже есть в библиотеке.
+export type RejectReason = 'too_large' | 'bad_format' | 'corrupt' | 'duplicate_own' | 'quota_full';
 
 export interface Submission {
   id: string;
   owner: string;
   file: AudioFile;
-  // null — заявка не принята и не занимает место в квоте.
-  pool: Pool | null;
   meta: SongMeta | null;
   processing: 'pending' | 'ok' | 'failed';
   rejection: RejectReason | null;
@@ -48,8 +46,8 @@ export interface Submission {
 export type SubmissionStatus = 'accepted' | 'processing' | 'needs_title' | 'rejected';
 
 export interface SongIndexEntry {
-  // Заявка, которая сейчас представляет эту песню в библиотеке.
-  submissionId: string | null;
+  // Заявки, склеенные в эту песню; пусто — песню убрали из всех заявок.
+  submissionIds: string[];
   // Все, кто присылал песню. Факт знакомства не стирается при удалении заявки.
   knownBy: string[];
 }
@@ -76,11 +74,11 @@ export function submissionsOf(state: IntakeState, owner: string): Submission[] {
   return state.submissions.filter((s) => s.owner === owner);
 }
 
-export function poolCount(state: IntakeState, owner: string, pool: Pool): number {
-  return submissionsOf(state, owner).filter((s) => s.pool === pool).length;
+// Заявки, занимающие место в квоте: всё, кроме отклонённых.
+export function activeCount(state: IntakeState, owner: string): number {
+  return submissionsOf(state, owner).filter((s) => !s.rejection).length;
 }
 
-// Принимает пачку файлов; пул назначается сам: сначала отбор, потом финал.
 export function receiveFiles(state: IntakeState, owner: string, files: readonly AudioFile[]): IntakeState {
   for (const file of files) state = receiveFile(state, owner, file);
   return state;
@@ -92,7 +90,6 @@ function receiveFile(state: IntakeState, owner: string, file: AudioFile): Intake
     id,
     owner,
     file,
-    pool: null,
     meta: fromTags(file.performer, file.title) ?? fromFileName(file.fileName),
     processing: 'pending',
     rejection: null,
@@ -106,10 +103,7 @@ function receiveFile(state: IntakeState, owner: string, file: AudioFile): Intake
   else if (!file.mimeType || !state.rules.acceptedMimeTypes.includes(file.mimeType)) {
     submission = reject(submission, 'bad_format');
   } else if (sameFile) submission = reject(submission, 'duplicate_own');
-  else {
-    const pool = freePool(state, owner);
-    submission = pool ? { ...submission, pool } : reject(submission, 'quota_full');
-  }
+  else if (activeCount(state, owner) >= state.rules.maxSubmissions) submission = reject(submission, 'quota_full');
 
   state = { ...state, submissions: [...state.submissions, submission] };
   return submission.rejection ? state : claimSong(state, id);
@@ -130,78 +124,68 @@ export function remove(state: IntakeState, submissionId: string): IntakeState {
   return { ...state, submissions: state.submissions.filter((s) => s.id !== submissionId) };
 }
 
-export type MoveResult = { ok: true; state: IntakeState } | { ok: false; error: 'target_full' | 'not_in_pool' };
-
-export function moveToOtherPool(state: IntakeState, submissionId: string): MoveResult {
-  const current = find(state, submissionId);
-  if (!current?.pool) return { ok: false, error: 'not_in_pool' };
-  const target = otherPool(current.pool);
-  if (poolCount(state, current.owner, target) >= state.rules.quota[target]) return { ok: false, error: 'target_full' };
-  return { ok: true, state: update(state, submissionId, { pool: target }) };
-}
-
-export function swapPools(state: IntakeState, firstId: string, secondId: string): MoveResult {
-  const first = find(state, firstId);
-  const second = find(state, secondId);
-  if (!first?.pool || !second?.pool || first.pool === second.pool || first.owner !== second.owner) {
-    return { ok: false, error: 'not_in_pool' };
-  }
-  state = update(state, firstId, { pool: second.pool });
-  return { ok: true, state: update(state, secondId, { pool: first.pool }) };
-}
-
 // Вердикт worker: файл декодируется и игровая версия собрана, либо файл битый.
 export function completeProcessing(state: IntakeState, submissionId: string, ok: boolean): IntakeState {
   const current = find(state, submissionId);
   if (!current || current.processing !== 'pending' || current.rejection) return state;
   if (ok) return update(state, submissionId, { processing: 'ok' });
   state = releaseSong(state, current);
-  return update(state, submissionId, { processing: 'failed', rejection: 'corrupt', pool: null });
+  return update(state, submissionId, { processing: 'failed', rejection: 'corrupt' });
 }
 
 export function pendingProcessing(state: IntakeState): Submission[] {
   return state.submissions.filter((s) => s.processing === 'pending' && !s.rejection);
 }
 
-function freePool(state: IntakeState, owner: string): Pool | null {
-  for (const pool of ['main', 'final'] as const) {
-    if (poolCount(state, owner, pool) < state.rules.quota[pool]) return pool;
-  }
-  return null;
+// Песни библиотеки: уникальные после склейки, с принятыми заявками.
+export interface LibrarySongRef {
+  key: string;
+  meta: SongMeta;
+  submissionIds: string[];
+  knownBy: string[];
 }
 
-// Связывает заявку с музыкальной идентичностью. Песня, уже представленная другой заявкой,
-// делает новую дублем, но её автор всё равно записывается в знающие.
+export function acceptedSongs(state: IntakeState): LibrarySongRef[] {
+  const result: LibrarySongRef[] = [];
+  for (const [key, entry] of Object.entries(state.songs)) {
+    const accepted = entry.submissionIds
+      .map((id) => find(state, id)!)
+      .filter((s) => statusOf(s) === 'accepted');
+    if (accepted.length === 0) continue;
+    result.push({ key, meta: accepted[0]!.meta!, submissionIds: accepted.map((s) => s.id), knownBy: entry.knownBy });
+  }
+  return result;
+}
+
+// Связывает заявку с музыкальной идентичностью. Чужая песня склеивается молча: заявка принята,
+// оба автора записаны знающими. Своя повторная — отклоняется, утечки здесь нет.
 function claimSong(state: IntakeState, submissionId: string): IntakeState {
   const submission = find(state, submissionId)!;
   if (!submission.meta) return state;
   const key = songKey(submission.meta.artist, submission.meta.title);
-  const entry = state.songs[key] ?? { submissionId: null, knownBy: [] };
+  const entry = state.songs[key] ?? { submissionIds: [], knownBy: [] };
   const knownBy = entry.knownBy.includes(submission.owner) ? entry.knownBy : [...entry.knownBy, submission.owner];
 
-  if (entry.submissionId !== null && entry.submissionId !== submissionId) {
-    const holder = find(state, entry.submissionId)!;
-    state = { ...state, songs: { ...state.songs, [key]: { ...entry, knownBy } } };
-    const reason: RejectReason = holder.owner === submission.owner ? 'duplicate_own' : 'duplicate_other';
-    return update(state, submissionId, { rejection: reason, pool: null });
-  }
-  return { ...state, songs: { ...state.songs, [key]: { submissionId, knownBy } } };
+  const ownTwice = entry.submissionIds.some((id) => id !== submissionId && find(state, id)?.owner === submission.owner);
+  if (ownTwice) return update(state, submissionId, { rejection: 'duplicate_own' });
+
+  const submissionIds = entry.submissionIds.includes(submissionId)
+    ? entry.submissionIds
+    : [...entry.submissionIds, submissionId];
+  return { ...state, songs: { ...state.songs, [key]: { submissionIds, knownBy } } };
 }
 
 function releaseSong(state: IntakeState, submission: Submission): IntakeState {
   if (!submission.meta) return state;
   const key = songKey(submission.meta.artist, submission.meta.title);
   const entry = state.songs[key];
-  if (!entry || entry.submissionId !== submission.id) return state;
-  return { ...state, songs: { ...state.songs, [key]: { ...entry, submissionId: null } } };
+  if (!entry || !entry.submissionIds.includes(submission.id)) return state;
+  const submissionIds = entry.submissionIds.filter((id) => id !== submission.id);
+  return { ...state, songs: { ...state.songs, [key]: { ...entry, submissionIds } } };
 }
 
 function reject(submission: Submission, reason: RejectReason): Submission {
-  return { ...submission, rejection: reason, pool: null };
-}
-
-function otherPool(pool: Pool): Pool {
-  return pool === 'main' ? 'final' : 'main';
+  return { ...submission, rejection: reason };
 }
 
 function find(state: IntakeState, id: string): Submission | undefined {

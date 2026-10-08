@@ -10,16 +10,24 @@ interface Props {
 }
 
 export function StepLog({ frames, cursor, names, onJump }: Props) {
+  const listRef = useRef<HTMLOListElement>(null);
   const activeRef = useRef<HTMLLIElement>(null);
 
+  // Прокручиваем только сам список: scrollIntoView двигал бы и страницу.
   useEffect(() => {
-    activeRef.current?.scrollIntoView({ block: 'nearest' });
+    const list = listRef.current;
+    const item = activeRef.current;
+    if (!list || !item) return;
+    const top = item.offsetTop - list.offsetTop;
+    if (top < list.scrollTop || top + item.offsetHeight > list.scrollTop + list.clientHeight) {
+      list.scrollTop = top - list.clientHeight / 2;
+    }
   }, [cursor]);
 
   return (
     <section className="log-section">
       <h2>Журнал</h2>
-      <ol className="log">
+      <ol className="log" ref={listRef}>
         {frames.map((f, i) => (
           <li
             key={i}

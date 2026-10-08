@@ -1,4 +1,4 @@
-import { DEFAULT_RULESET } from '../domain/match/ruleset.ts';
+import { QUALIFIER_RULESET } from '../domain/match/ruleset.ts';
 import type { LibrarySong, MatchSessionConfig } from '../bot/matchSession.ts';
 
 // Вымышленные участники и только метаданные песен — без аудио, симулятор публичный.
@@ -64,11 +64,12 @@ export const DEMO_LIBRARY: LibrarySong[] = SONGS.map(([artist, title, owner, acc
 
 export function demoConfig(overrides: Partial<MatchSessionConfig> = {}): MatchSessionConfig {
   return {
+    stage: 'qualifier',
     matchNo: 7,
     players: [DEMO_USERS.p0, DEMO_USERS.p1],
     judge: DEMO_USERS.judge,
     library: DEMO_LIBRARY,
-    ruleset: DEFAULT_RULESET,
+    ruleset: QUALIFIER_RULESET,
     seed: 2026,
     ...overrides,
   };

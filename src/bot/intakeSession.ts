@@ -1,38 +1,41 @@
 import {
+  acceptedSongs,
   completeProcessing,
   createIntake,
-  moveToOtherPool,
   pendingProcessing,
   receiveFiles,
   remove,
   setTitle,
   statusOf,
   submissionsOf,
-  swapPools,
+  type AudioFile,
   type IntakeRules,
   type IntakeState,
-  type Pool,
   type RejectReason,
   type Submission,
 } from '../domain/submission/intake.ts';
+import { splitPools, type PoolSplit } from '../domain/submission/pools.ts';
 import { fromText } from '../domain/submission/titles.ts';
+import { plural } from '../shared/text.ts';
 import type { Participant } from './matchSession.ts';
 import type { Button, Incoming, Outgoing, OutgoingMessage, UserId } from './protocol.ts';
 
-// Сбор треков в чате с ботом. У участника одно живое сообщение-список: файлы можно пересылать
-// пачкой, названия берутся из тегов, бот спрашивает только то, что не смог понять сам.
+// Сбор треков в чате с ботом (docs/decisions/2026-10-08-mechanics-revision.md, разделы 4–6).
+// У участника одно живое сообщение-список: файлы пересылаются пачкой, названия берутся из тегов,
+// бот спрашивает только то, что не понял сам. Пулы делит бот после закрытия сбора.
 
 export interface IntakeSessionConfig {
   participants: Participant[];
+  // Участники, которые уже сдали треки до начала демонстрации: их нет в колонках симулятора.
+  background: { participant: Participant; files: AudioFile[] }[];
   organizer: Participant;
   rules: IntakeRules;
+  finalPoolTarget: number;
+  finalists: number;
+  seed: number;
 }
 
-type Mode =
-  | { kind: 'idle' }
-  | { kind: 'pick'; action: 'edit' | 'move' | 'remove' }
-  | { kind: 'swap'; submissionId: string }
-  | { kind: 'awaitTitle'; submissionId: string };
+type Mode = { kind: 'idle' } | { kind: 'pick'; action: 'edit' | 'remove' } | { kind: 'awaitTitle'; submissionId: string };
 
 interface UserUi {
   mode: Mode;
@@ -43,10 +46,19 @@ interface UserUi {
   listPostedAt: number;
 }
 
+export type AdmissionDecision = 'admit' | 'exclude';
+
+export interface ClosedIntake {
+  split: PoolSplit;
+  // Решения организатора по недобравшим; без решения игрок не попадает в жеребьёвку.
+  decisions: Record<UserId, AdmissionDecision>;
+}
+
 export interface IntakeSession {
   config: IntakeSessionConfig;
   intake: IntakeState;
   ui: Record<UserId, UserUi>;
+  closed: ClosedIntake | null;
 }
 
 export interface IntakeStep {
@@ -54,23 +66,28 @@ export interface IntakeStep {
   out: Outgoing[];
 }
 
-const POOL_LABEL: Record<Pool, string> = { main: 'Отбор', final: 'Финал' };
-
 const REJECT_TEXT: Record<RejectReason, string> = {
   too_large: 'больше 20 МБ',
   bad_format: 'нужен MP3 или M4A',
   corrupt: 'файл не читается',
-  duplicate_other: 'эта песня уже есть у другого участника',
   duplicate_own: 'уже есть в твоём списке',
-  quota_full: 'сверх 10 треков',
+  quota_full: 'сверх 10 песен',
 };
+
+// Запас подходящих песен на один короткий отборочный матч (раздел 4 пересмотра механики).
+const MIN_SONGS_PER_QUALIFIER = 10;
 
 const TITLE_FORMAT = 'Ответь сообщением в формате «Исполнитель — Название».';
 
 export function openIntakeSession(config: IntakeSessionConfig): IntakeStep {
   const ui: Record<UserId, UserUi> = {};
   for (const p of config.participants) ui[p.id] = { mode: { kind: 'idle' }, notice: null, activity: 0, listPostedAt: 0 };
-  const session: IntakeSession = { config, intake: createIntake(config.rules), ui };
+
+  let intake = createIntake(config.rules);
+  for (const { participant, files } of config.background) intake = receiveFiles(intake, participant.id, files);
+  for (const s of pendingProcessing(intake)) intake = completeProcessing(intake, s.id, true);
+
+  const session: IntakeSession = { config, intake, ui, closed: null };
   const welcome: OutgoingMessage[] = config.participants.map((p) => ({
     kind: 'message',
     to: p.id,
@@ -78,9 +95,9 @@ export function openIntakeSession(config: IntakeSessionConfig): IntakeStep {
     text: [
       `Привет, ${p.name}! Собираем песни для турнира.`,
       '',
-      `Нужно ${total(config.rules)}: ${config.rules.quota.main} в отбор и ${config.rules.quota.final} в финал.`,
-      'Пересылай аудио пачкой — хоть все сразу, из @Music_to_you_bot или откуда удобно.',
+      `Пришли до ${config.rules.maxSubmissions} песен — пересылай пачкой, хоть все сразу, из @Music_to_you_bot или откуда удобно.`,
       'Исполнителя и название возьму из файла; если не получится — спрошу.',
+      'На отбор и финал песни разделю сам после закрытия сбора.',
     ].join('\n'),
   }));
   return { session, out: [...welcome, ...render(session)] };
@@ -94,33 +111,70 @@ export function handleIntake(session: IntakeSession, input: Incoming): IntakeSte
     let intake = session.intake;
     for (const { submissionId, ok } of input.results) intake = completeProcessing(intake, submissionId, ok);
     next = { ...session, intake };
+  } else if (input.from === session.config.organizer.id) {
+    if (input.kind !== 'button') return { session, out: [] };
+    const result = handleOrganizer(session, input.data);
+    if ('toast' in result) return { session, out: [{ kind: 'toast', to: input.from, text: result.toast }] };
+    next = result.session;
   } else {
     const ui = session.ui[input.from];
     if (!ui) return { session, out: [] };
     if (input.kind === 'button') {
+      if (session.closed) return { session, out: [{ kind: 'toast', to: input.from, text: 'Сбор уже закрыт' }] };
       const result = handleButton(session, input.from, input.data);
       if ('toast' in result) return { session, out: [{ kind: 'toast', to: input.from, text: result.toast }] };
       next = result.session;
     } else {
-      next = input.kind === 'files' ? handleFiles(session, input.from, input) : handleText(session, input.from, input.text);
+      if (session.closed) {
+        next = setUi(session, input.from, { notice: 'Сбор уже закрыт — новые песни и правки не принимаются.' });
+      } else {
+        next = input.kind === 'files' ? handleFiles(session, input.from, input.files) : handleText(session, input.from, input.text);
+      }
       next = setUi(next, input.from, { activity: ui.activity + 1 });
     }
   }
 
-  return emit(next, before, input.kind === 'text' || input.kind === 'files' ? input.from : undefined);
+  const author = input.kind === 'text' || input.kind === 'files' ? input.from : undefined;
+  return emit(next, before, author);
 }
 
-// Готовые вердикты для фейкового worker в симуляторе; в проде их присылает настоящий worker с ffprobe.
 export function pendingSubmissions(session: IntakeSession): Submission[] {
   return pendingProcessing(session.intake);
 }
 
-function handleFiles(session: IntakeSession, from: UserId, input: Extract<Incoming, { kind: 'files' }>): IntakeSession {
+export function allParticipants(config: IntakeSessionConfig): Participant[] {
+  return [...config.participants, ...config.background.map((b) => b.participant)];
+}
+
+export function acceptedCount(session: IntakeSession, userId: UserId): number {
+  return submissionsOf(session.intake, userId).filter((s) => statusOf(s) === 'accepted').length;
+}
+
+export function underSubmitted(session: IntakeSession): Participant[] {
+  const { maxSubmissions } = session.config.rules;
+  return allParticipants(session.config).filter((p) => acceptedCount(session, p.id) < maxSubmissions);
+}
+
+export function admittedPlayers(session: IntakeSession): Participant[] {
+  const closed = session.closed;
+  if (!closed) return [];
+  const short = new Set(underSubmitted(session).map((p) => p.id));
+  return allParticipants(session.config).filter((p) => !short.has(p.id) || closed.decisions[p.id] === 'admit');
+}
+
+export function readyForDraw(session: IntakeSession): boolean {
+  const closed = session.closed;
+  return closed !== null && underSubmitted(session).every((p) => closed.decisions[p.id] !== undefined);
+}
+
+// --- Участник ---------------------------------------------------------------
+
+function handleFiles(session: IntakeSession, from: UserId, files: AudioFile[]): IntakeSession {
   // Отклонённые ранее файлы убираем из списка: участник прислал замену.
   let intake = session.intake;
   for (const s of submissionsOf(intake, from)) if (s.rejection) intake = remove(intake, s.id);
   const known = new Set(submissionsOf(intake, from).map((s) => s.id));
-  intake = receiveFiles(intake, from, input.files);
+  intake = receiveFiles(intake, from, files);
 
   const added = submissionsOf(intake, from).filter((s) => !known.has(s.id));
   const rejected = added.filter((s) => s.rejection).length;
@@ -135,7 +189,9 @@ function handleText(session: IntakeSession, from: UserId, text: string): IntakeS
     return setUi(session, from, { notice: 'Чтобы поправить название, нажми «✏️ Исправить» под списком.' });
   }
   const meta = fromText(text);
-  if (!meta) return setUi(session, from, { notice: `Не разобрал «${text}»: исполнителя и название нужно разделить тире.` });
+  if (!meta) {
+    return setUi(session, from, { notice: `Не разобрал «${text}»: исполнителя и название нужно разделить тире.` });
+  }
 
   const intake = setTitle(session.intake, target.id, meta);
   const updated = intake.submissions.find((s) => s.id === target.id)!;
@@ -148,76 +204,71 @@ function handleText(session: IntakeSession, from: UserId, text: string): IntakeS
 type ButtonResult = { session: IntakeSession } | { toast: string };
 
 function handleButton(session: IntakeSession, from: UserId, data: string): ButtonResult {
-  const ui = session.ui[from]!;
   if (data === 'cancel') return { session: setUi(session, from, { mode: { kind: 'idle' }, notice: null }) };
 
-  const pick = /^pick:(edit|move|remove)$/.exec(data);
+  const pick = /^pick:(edit|remove)$/.exec(data);
   if (pick) {
-    const action = pick[1] as 'edit' | 'move' | 'remove';
+    const action = pick[1] as 'edit' | 'remove';
     if (candidates(session, from, action).length === 0) return { toast: 'Пока нечего выбирать' };
     return { session: setUi(session, from, { mode: { kind: 'pick', action }, notice: null }) };
   }
 
   const chosen = /^n:(\w+)$/.exec(data);
   const submission = chosen && session.intake.submissions.find((s) => s.id === chosen[1] && s.owner === from);
-  if (!submission) return { toast: 'Этого трека уже нет в списке' };
-  const label = labelOf(submission);
-  const { mode } = ui;
-
-  if (mode.kind === 'swap') {
-    const result = swapPools(session.intake, mode.submissionId, submission.id);
-    if (!result.ok) return { toast: 'Не получилось поменять' };
-    return { session: done({ ...session, intake: result.state }, from, 'Поменял треки местами.') };
-  }
+  if (!submission) return { toast: 'Этой песни уже нет в списке' };
+  const { mode } = session.ui[from]!;
   if (mode.kind !== 'pick') return { toast: 'Сначала выбери действие под списком' };
 
-  switch (mode.action) {
-    case 'edit':
-      return {
-        session: setUi(session, from, { mode: { kind: 'awaitTitle', submissionId: submission.id }, notice: null }),
-      };
-    case 'remove':
-      return { session: done({ ...session, intake: remove(session.intake, submission.id) }, from, `Убрал «${label}».`) };
-    case 'move': {
-      const result = moveToOtherPool(session.intake, submission.id);
-      if (result.ok) {
-        const pool = result.state.submissions.find((s) => s.id === submission.id)!.pool!;
-        return { session: done({ ...session, intake: result.state }, from, `«${label}» теперь в пуле «${POOL_LABEL[pool]}».`) };
-      }
-      return { session: setUi(session, from, { mode: { kind: 'swap', submissionId: submission.id }, notice: null }) };
-    }
+  if (mode.action === 'edit') {
+    return { session: setUi(session, from, { mode: { kind: 'awaitTitle', submissionId: submission.id }, notice: null }) };
   }
+  const intake = remove(session.intake, submission.id);
+  return {
+    session: setUi({ ...session, intake }, from, { mode: { kind: 'idle' }, notice: `Убрал «${labelOf(submission)}».` }),
+  };
 }
 
-function done(session: IntakeSession, userId: UserId, notice: string): IntakeSession {
-  return setUi(session, userId, { mode: { kind: 'idle' }, notice });
+// --- Организатор ------------------------------------------------------------
+
+function handleOrganizer(session: IntakeSession, data: string): ButtonResult {
+  if (data === 'closeIntake') {
+    if (session.closed) return { toast: 'Сбор уже закрыт' };
+    const { finalPoolTarget, seed } = session.config;
+    const split = splitPools(acceptedSongs(session.intake), finalPoolTarget, seed);
+    return { session: { ...session, closed: { split, decisions: {} } } };
+  }
+  const decision = /^(admit|exclude):(.+)$/.exec(data);
+  if (decision && session.closed) {
+    const [, verdict, userId] = decision;
+    const decisions = { ...session.closed.decisions, [userId!]: verdict as AdmissionDecision };
+    return { session: { ...session, closed: { ...session.closed, decisions } } };
+  }
+  return { toast: 'Сейчас это действие недоступно' };
 }
 
 function setUi(session: IntakeSession, userId: UserId, patch: Partial<UserUi>): IntakeSession {
   return { ...session, ui: { ...session.ui, [userId]: { ...session.ui[userId]!, ...patch } } };
 }
 
-// Трек, для которого бот ждёт название: выбранный вручную или первый без названия.
+// Песня, для которой бот ждёт название: выбранная вручную или первая без названия.
 function titleTarget(session: IntakeSession, userId: UserId): Submission | undefined {
   const { mode } = session.ui[userId]!;
   if (mode.kind === 'awaitTitle') return session.intake.submissions.find((s) => s.id === mode.submissionId);
   return ordered(session, userId).find((s) => statusOf(s) === 'needs_title');
 }
 
-function candidates(session: IntakeSession, userId: UserId, action: 'edit' | 'move' | 'remove'): Submission[] {
+function candidates(session: IntakeSession, userId: UserId, action: 'edit' | 'remove'): Submission[] {
   const list = ordered(session, userId);
-  if (action === 'remove') return list;
-  if (action === 'move') return list.filter((s) => s.pool !== null);
-  return list.filter((s) => !s.rejection);
+  return action === 'remove' ? list : list.filter((s) => !s.rejection);
 }
 
-// Порядок в списке и номера: отбор, финал, затем не принятые.
+// Порядок в списке и номера: сначала рабочие заявки, затем не подошедшие.
 function ordered(session: IntakeSession, userId: UserId): Submission[] {
   const own = submissionsOf(session.intake, userId);
-  return [...own.filter((s) => s.pool === 'main'), ...own.filter((s) => s.pool === 'final'), ...own.filter((s) => !s.pool)];
+  return [...own.filter((s) => !s.rejection), ...own.filter((s) => s.rejection)];
 }
 
-// --- Рендер ---------------------------------------------------------------
+// --- Рендер -----------------------------------------------------------------
 
 // Отправляем только изменившиеся сообщения. Список того, кто сам что-то написал, переотправляется
 // всегда: иначе на сообщение без изменений участник не увидит реакции.
@@ -240,31 +291,31 @@ function emit(next: IntakeSession, before: OutgoingMessage[], author?: UserId): 
 }
 
 export function render(session: IntakeSession): OutgoingMessage[] {
-  return [
-    ...session.config.participants.map((p) => renderList(session, p.id)),
-    renderOrganizer(session),
-  ];
+  return [...session.config.participants.map((p) => renderList(session, p.id)), renderOrganizer(session)];
 }
 
 function renderList(session: IntakeSession, userId: UserId): OutgoingMessage {
-  const { rules } = session.config;
+  const { maxSubmissions } = session.config.rules;
   const ui = session.ui[userId]!;
   const list = ordered(session, userId);
   const number = new Map(list.map((s, i) => [s.id, i + 1]));
-  const accepted = list.filter((s) => statusOf(s) === 'accepted').length;
+  const accepted = acceptedCount(session, userId);
   const lines: string[] = [];
 
-  if (accepted === total(rules)) {
-    lines.push(`✅ Все ${total(rules)} треков приняты`, 'Можно менять до закрытия сбора.');
+  if (session.closed) {
+    lines.push(`🔒 Сбор закрыт · принято ${accepted} из ${maxSubmissions}`, 'Дальше жеребьёвка — пару пришлю сюда.');
+  } else if (accepted === maxSubmissions) {
+    lines.push(`✅ Все ${maxSubmissions} песен приняты`, 'Можно менять до закрытия сбора.');
   } else {
-    lines.push(`🎵 Твои треки · принято ${accepted} из ${total(rules)}`, 'Проверь названия — по ним судья засчитывает ответы.');
+    lines.push(
+      `🎵 Твои песни · принято ${accepted} из ${maxSubmissions}`,
+      'Проверь названия — по ним судья засчитывает ответы.',
+    );
   }
 
-  for (const pool of ['main', 'final'] as const) {
-    const inPool = list.filter((s) => s.pool === pool);
-    lines.push('', `${POOL_LABEL[pool]} · ${inPool.length} из ${rules.quota[pool]}`);
-    for (const s of inPool) lines.push(`${number.get(s.id)}. ${labelOf(s)} ${statusMark(s)}`);
-  }
+  const active = list.filter((s) => !s.rejection);
+  if (active.length > 0) lines.push('');
+  for (const s of active) lines.push(`${number.get(s.id)}. ${labelOf(s)} ${statusMark(s)}`);
   const rejected = list.filter((s) => s.rejection);
   if (rejected.length > 0) {
     lines.push('', 'Не подошло — пришли замену:');
@@ -273,27 +324,25 @@ function renderList(session: IntakeSession, userId: UserId): OutgoingMessage {
 
   const footer: string[] = [];
   if (ui.notice) footer.push(ui.notice);
-  const target = titleTarget(session, userId);
+  const target = session.closed ? undefined : titleTarget(session, userId);
   const { mode } = ui;
-  if (target && (mode.kind === 'idle' || mode.kind === 'awaitTitle')) {
+  if (target && mode.kind !== 'pick') {
     footer.push(
       mode.kind === 'awaitTitle'
-        ? `✏️ Трек ${number.get(target.id)}: сейчас «${labelOf(target)}». ${TITLE_FORMAT}`
-        : `✏️ Трек ${number.get(target.id)} (${target.file.fileName ?? 'без имени'}): не нашёл название. ${TITLE_FORMAT}`,
+        ? `✏️ Песня ${number.get(target.id)}: сейчас «${labelOf(target)}». ${TITLE_FORMAT}`
+        : `✏️ Песня ${number.get(target.id)} (${target.file.fileName ?? 'без имени'}): не нашёл название. ${TITLE_FORMAT}`,
     );
   }
-  if (mode.kind === 'pick') {
-    const verb = { edit: 'исправить', move: 'перенести в другой пул', remove: 'убрать' }[mode.action];
-    footer.push(`Какой трек ${verb}?`);
-  }
-  if (mode.kind === 'swap') {
-    const moving = list.find((s) => s.id === mode.submissionId);
-    const target = moving?.pool === 'main' ? 'финале' : 'отборе';
-    footer.push(`В ${target} нет места. С каким треком поменять «${moving ? labelOf(moving) : ''}»?`);
-  }
+  if (mode.kind === 'pick') footer.push(mode.action === 'edit' ? 'Какую песню исправить?' : 'Какую песню убрать?');
   if (footer.length > 0) lines.push('', ...footer);
 
-  return { kind: 'message', to: userId, slot: 'list', text: lines.join('\n'), buttons: listButtons(session, userId, list, number) };
+  return {
+    kind: 'message',
+    to: userId,
+    slot: 'list',
+    text: lines.join('\n'),
+    buttons: session.closed ? undefined : listButtons(session, userId, list, number),
+  };
 }
 
 function listButtons(
@@ -303,48 +352,97 @@ function listButtons(
   number: Map<string, number>,
 ): Button[][] | undefined {
   const { mode } = session.ui[userId]!;
-  const numberRows = (items: Submission[]): Button[][] => {
+  if (mode.kind === 'pick') {
+    const items = candidates(session, userId, mode.action);
     const rows: Button[][] = [];
     for (let i = 0; i < items.length; i += 5) {
       rows.push(items.slice(i, i + 5).map((s) => ({ label: String(number.get(s.id)), data: `n:${s.id}` })));
     }
     return [...rows, [{ label: 'Отмена', data: 'cancel' }]];
-  };
-
-  if (mode.kind === 'pick') return numberRows(candidates(session, userId, mode.action));
-  if (mode.kind === 'swap') {
-    const moving = list.find((s) => s.id === mode.submissionId);
-    return numberRows(list.filter((s) => s.pool !== null && s.pool !== moving?.pool));
   }
   if (mode.kind === 'awaitTitle') return [[{ label: 'Отмена', data: 'cancel' }]];
   if (list.length === 0) return undefined;
   return [
     [
       { label: '✏️ Исправить', data: 'pick:edit' },
-      { label: '⇄ Пул', data: 'pick:move' },
       { label: '🗑 Убрать', data: 'pick:remove' },
     ],
   ];
 }
 
 function renderOrganizer(session: IntakeSession): OutgoingMessage {
-  const { participants, rules } = session.config;
-  const all = session.intake.submissions;
-  const count = (status: string) => all.filter((s) => statusOf(s) === status).length;
-  const lines = ['📥 Сбор треков', ''];
-  for (const p of participants) {
-    const own = submissionsOf(session.intake, p.id);
-    const accepted = own.filter((s) => statusOf(s) === 'accepted').length;
-    const waiting = own.filter((s) => statusOf(s) === 'needs_title').length;
-    lines.push(`${accepted === total(rules) ? '✅' : '•'} ${p.name} — ${accepted} из ${total(rules)}${waiting ? ` · ждёт названий: ${waiting}` : ''}`);
+  const { config, intake, closed } = session;
+  const { maxSubmissions } = config.rules;
+  const people = allParticipants(config);
+  const songs = acceptedSongs(intake);
+  const acceptedTotal = intake.submissions.filter((s) => statusOf(s) === 'accepted').length;
+  const full = people.filter((p) => acceptedCount(session, p.id) === maxSubmissions).length;
+  const short = underSubmitted(session);
+  const lines = [closed ? '🔒 Сбор закрыт' : '📥 Сбор треков', ''];
+
+  lines.push(
+    `Участников: ${people.length} · сдали все ${maxSubmissions}: ${full}`,
+    `Принято заявок: ${acceptedTotal} · уникальных песен: ${songs.length}` +
+      (acceptedTotal > songs.length ? ` (склеено дублей: ${acceptedTotal - songs.length})` : ''),
+  );
+
+  if (!closed) {
+    const pending = intake.submissions.filter((s) => statusOf(s) === 'processing').length;
+    const untitled = intake.submissions.filter((s) => statusOf(s) === 'needs_title').length;
+    if (pending || untitled) lines.push(`В обработке: ${pending} · без названия: ${untitled}`);
+    if (short.length > 0) {
+      lines.push('', `Пока меньше ${maxSubmissions}:`, ...short.map((p) => `• ${p.name} — ${acceptedCount(session, p.id)}`));
+    }
+    return {
+      kind: 'message',
+      to: config.organizer.id,
+      slot: 'intake',
+      text: lines.join('\n'),
+      buttons: [[{ label: '🔒 Закрыть сбор', data: 'closeIntake' }]],
+    };
   }
-  const duplicates = all.filter((s) => s.rejection === 'duplicate_other').length;
+
+  const buttons: Button[][] = [];
+  if (short.length > 0) {
+    lines.push('', `Сдали меньше ${maxSubmissions} — без решения в жеребьёвку не попадут:`);
+    for (const p of short) {
+      const decision = closed.decisions[p.id];
+      const mark = decision === 'admit' ? '✅ допущен' : decision === 'exclude' ? '✖ не допущен' : '⏳ ждёт решения';
+      lines.push(`• ${p.name} — ${acceptedCount(session, p.id)} из ${maxSubmissions} · ${mark}`);
+      if (!decision) {
+        buttons.push([
+          { label: `✅ Допустить: ${p.name}`, data: `admit:${p.id}` },
+          { label: '✖ Нет', data: `exclude:${p.id}` },
+        ]);
+      }
+    }
+  }
+
+  const { split } = closed;
+  const finalOk = split.final.length >= split.finalTarget;
+  const players = admittedPlayers(session).length;
+  const qualifierMatches = Math.max(0, players - config.finalists);
+  // Повтор песни между независимыми парами допустим, поэтому отбору хватает запаса на один матч.
+  const mainOk = split.main.length >= MIN_SONGS_PER_QUALIFIER;
   lines.push(
     '',
-    `Принято ${count('accepted')} · в обработке ${count('processing')} · без названия ${count('needs_title')} · не подошло ${count('rejected')}`,
-    `Дубли между участниками: ${duplicates}`,
+    `Пулы разделены (seed ${split.seed}):`,
+    `${finalOk ? '✅' : '⚠️'} Финал: ${split.final.length} из нужных ~${split.finalTarget}`,
+    `${mainOk ? '✅' : '⚠️'} Отбор: ${split.main.length} ${plural(split.main.length, 'песня', 'песни', 'песен')} на ${qualifierMatches} ${plural(qualifierMatches, 'матч', 'матча', 'матчей')} — на матч нужно ~${MIN_SONGS_PER_QUALIFIER} подходящих, повтор между парами допустим`,
   );
-  return { kind: 'message', to: session.config.organizer.id, slot: 'intake', text: lines.join('\n') };
+  if (!finalOk) lines.push(`Финалу не хватает ${split.finalTarget - split.final.length} — нужен запас организатора.`);
+  lines.push(
+    '',
+    readyForDraw(session) ? `Готово к жеребьёвке: ${players} игроков ✅` : 'Жеребьёвка — после решений по недобравшим.',
+  );
+
+  return {
+    kind: 'message',
+    to: config.organizer.id,
+    slot: 'intake',
+    text: lines.join('\n'),
+    buttons: buttons.length ? buttons : undefined,
+  };
 }
 
 function labelOf(s: Submission): string {
@@ -362,16 +460,4 @@ function statusMark(s: Submission): string {
     case 'rejected':
       return '⚠️';
   }
-}
-
-function total(rules: IntakeRules): number {
-  return rules.quota.main + rules.quota.final;
-}
-
-function plural(n: number, one: string, few: string, many: string): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return one;
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
-  return many;
 }

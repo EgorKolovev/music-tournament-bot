@@ -8,7 +8,7 @@ import {
   type PlayerSlot,
   type TrackAwards,
 } from './match.ts';
-import { DEFAULT_RULESET } from './ruleset.ts';
+import { FINAL_RULESET, QUALIFIER_RULESET, type Ruleset } from './ruleset.ts';
 
 function run(state: MatchState, ...commands: MatchCommand[]): MatchState {
   for (const command of commands) {
@@ -19,9 +19,9 @@ function run(state: MatchState, ...commands: MatchCommand[]): MatchState {
   return state;
 }
 
-function readyMatch(): MatchState {
+function readyMatch(ruleset: Ruleset = FINAL_RULESET): MatchState {
   return run(
-    createMatch(DEFAULT_RULESET),
+    createMatch(ruleset),
     { type: 'markReady', who: 'judge' },
     { type: 'markReady', who: 0 },
     { type: 'markReady', who: 1 },
@@ -49,7 +49,7 @@ function winnerOf(state: MatchState): PlayerSlot | undefined {
 
 describe('лобби', () => {
   it('матч начинается, только когда готовы судья и оба игрока', () => {
-    let state = run(createMatch(DEFAULT_RULESET), { type: 'markReady', who: 0 }, { type: 'markReady', who: 'judge' });
+    let state = run(createMatch(FINAL_RULESET), { type: 'markReady', who: 0 }, { type: 'markReady', who: 'judge' });
     expect(state.phase.kind).toBe('lobby');
     state = run(state, { type: 'markReady', who: 1 });
     expect(state.phase.kind).toBe('between_tracks');
@@ -148,19 +148,14 @@ describe('завершение матча', () => {
     expect(winnerOf(state)).toBe(1);
   });
 
-  it('равенство после 20 треков даёт дополнительную серию, первый неравный итог её завершает', () => {
+  it('равенство после 20 треков даёт дополнительные треки до первого неравного счёта', () => {
     let state = playTracks(readyMatch(), 20, {});
     expect(state.phase.kind).toBe('between_tracks');
-    state = playTracks(state, 2, {});
+    // Паузы после серии ничьих нет: матч идёт, пока счёт не разойдётся.
+    state = playTracks(state, 12, {});
     expect(state.phase.kind).toBe('between_tracks');
     state = playTrack(state, { artist: 0 });
     expect(winnerOf(state)).toBe(0);
-  });
-
-  it('равенство после 5 дополнительных треков приостанавливает матч без жребия', () => {
-    const state = playTracks(readyMatch(), 25, {});
-    expect(state.phase.kind).toBe('suspended');
-    expect(applyCommand(state, { type: 'issueTrack', songId: 'x' })).toEqual({ ok: false, error: 'wrong_phase' });
   });
 
   it('результат подтверждает сначала судья, затем оба игрока', () => {
@@ -173,6 +168,43 @@ describe('завершение матча', () => {
     expect(state.phase.kind).toBe('decided');
     state = run(state, { type: 'confirmResult', who: 0 });
     expect(state.phase).toEqual({ kind: 'finished', winner: 0 });
+  });
+});
+
+describe('короткий отбор на N треков', () => {
+  it('матч не заканчивается досрочно, даже при большом отрыве', () => {
+    let state = playTracks(readyMatch(QUALIFIER_RULESET), 4, { artist: 0, title: 0 });
+    expect(liveScore(state)).toEqual([84, 0]);
+    expect(state.phase.kind).toBe('between_tracks');
+    state = playTrack(state, {});
+    expect(winnerOf(state)).toBe(0);
+  });
+
+  it('ничья 2,1 : 2,1 после N треков решается дополнительными треками', () => {
+    // 0,9 + 1,2 против 1,2 + 0,9 — пример из разбора механики.
+    let state = playTrack(readyMatch(QUALIFIER_RULESET), { artist: 0, title: 1 });
+    state = playTrack(state, { artist: 1, title: 0 });
+    state = playTracks(state, 3, {});
+    expect(liveScore(state)).toEqual([21, 21]);
+    expect(state.phase.kind).toBe('between_tracks');
+    state = playTracks(state, 2, {});
+    state = playTrack(state, { title: 1 });
+    expect(state.closedTracks).toHaveLength(8);
+    expect(winnerOf(state)).toBe(1);
+  });
+});
+
+describe('нехватка песен', () => {
+  it('матч останавливается только между треками и только по исчерпанию песен', () => {
+    const state = readyMatch(QUALIFIER_RULESET);
+    expect(applyCommand(run(state, { type: 'issueTrack', songId: 'x' }), { type: 'suspend', reason: 'songs_exhausted' })).toEqual({
+      ok: false,
+      error: 'wrong_phase',
+    });
+    expect(run(state, { type: 'suspend', reason: 'songs_exhausted' }).phase).toEqual({
+      kind: 'suspended',
+      reason: 'songs_exhausted',
+    });
   });
 });
 

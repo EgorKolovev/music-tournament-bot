@@ -20,7 +20,7 @@ export interface CatalogFile {
 }
 
 export interface Engine<S> {
-  id: 'match' | 'intake';
+  id: 'intake' | 'draw' | 'match' | 'final';
   title: string;
   columns: Column[];
   // Можно ли участникам писать текст и пересылать файлы.
