@@ -12,6 +12,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "bot": "node --env-file-if-exists=.env src/telegram/main.ts",
+    "db:reset": "node --env-file-if-exists=.env src/storage/reset.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "tsc --noEmit"

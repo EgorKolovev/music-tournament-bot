@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { QUALIFIER_RULESET, FINAL_RULESET } from '../domain/match/ruleset.ts';
 import { DEFAULT_INTAKE_RULES } from '../domain/submission/intake.ts';
 import { DEFAULT_FINAL_TARGET, finalPoolSize } from '../domain/submission/pools.ts';
+import { DEFAULT_DATABASE_URL } from '../storage/database.ts';
 import type { TournamentConfig } from '../tournament/tournament.ts';
 
 // Настройки бота из переменных окружения (пример — .env.example). Параметры турнира фиксируются
@@ -28,8 +29,7 @@ export function readSettings(env: Record<string, string | undefined>): BotSettin
   if (!token) throw new ConfigError('Не задан BOT_TOKEN — токен тестового бота из @BotFather.');
   const organizerId = env.ORGANIZER_ID?.trim();
   if (!organizerId || !/^\d+$/.test(organizerId)) throw new ConfigError('Не задан ORGANIZER_ID — Telegram ID организатора.');
-  // По умолчанию — локальный PostgreSQL из Homebrew: пользователь системы без пароля.
-  const databaseUrl = env.DATABASE_URL?.trim() || 'postgres://localhost:5432/tournament';
+  const databaseUrl = env.DATABASE_URL?.trim() || DEFAULT_DATABASE_URL;
 
   const audioMode = (env.AUDIO_MODE ?? 'ffmpeg').trim();
   if (audioMode !== 'ffmpeg' && audioMode !== 'skip') throw new ConfigError('AUDIO_MODE: ffmpeg или skip.');

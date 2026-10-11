@@ -3,6 +3,9 @@ import type { Pool, PoolClient } from 'pg';
 // Минимальный доступ к PostgreSQL, который нужен хранилищу. В проде — пул pg,
 // в тестах — PGlite (тот же PostgreSQL, собранный в WASM, без сервера).
 
+// Локальный PostgreSQL из Homebrew: пользователь системы без пароля.
+export const DEFAULT_DATABASE_URL = 'postgres://localhost:5432/tournament';
+
 export interface Queryable {
   query<R = Record<string, unknown>>(text: string, params?: unknown[]): Promise<{ rows: R[]; rowCount: number }>;
 }

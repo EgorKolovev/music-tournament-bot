@@ -25,6 +25,7 @@ export interface CommitInput {
 }
 
 const SNAPSHOT_EVERY = 50;
+const TABLES = ['events', 'snapshots', 'inbox', 'outbox', 'slots', 'jobs'];
 const JOB_ATTEMPTS = 5;
 
 const SCHEMA = `
@@ -69,6 +70,22 @@ const SCHEMA = `
   );
   ALTER TABLE jobs ADD COLUMN IF NOT EXISTS start_sec INTEGER NOT NULL DEFAULT 0;
 `;
+
+// Что лежит в базе — чтобы подтвердить удаление. undefined — турнира нет.
+export async function tournamentSummary(db: Queryable): Promise<{ title: string; events: number } | undefined> {
+  const { rows } = await db.query<{ exists: boolean }>(`SELECT to_regclass('snapshots') IS NOT NULL AS exists`);
+  if (!rows[0]!.exists) return undefined;
+  const snapshot = await db.query<{ state: string }>('SELECT state FROM snapshots ORDER BY seq DESC LIMIT 1');
+  if (snapshot.rows.length === 0) return undefined;
+  const { config } = JSON.parse(snapshot.rows[0]!.state) as TournamentState;
+  const events = await db.query<{ n: number }>('SELECT count(*)::int AS n FROM events');
+  return { title: config.title, events: events.rows[0]!.n };
+}
+
+// Турнир целиком: следующий Store.open создаст таблицы пустыми, бот начнёт новый турнир.
+export async function dropTournament(db: Database): Promise<void> {
+  await db.exec(`DROP TABLE IF EXISTS ${TABLES.join(', ')}`);
+}
 
 export class Store implements SlotStore, JobSource {
   private readonly db: Database;

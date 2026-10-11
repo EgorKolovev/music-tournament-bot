@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { OutgoingMessage } from '../bot/protocol.ts';
 import { createTournament } from '../tournament/tournament.ts';
 import { testConfig } from '../tournament/testBot.ts';
-import { Store } from './store.ts';
+import { dropTournament, Store, tournamentSummary } from './store.ts';
 import { testDatabase, type TestDatabase } from './testDatabase.ts';
 
 const databases: TestDatabase[] = [];
@@ -101,6 +101,20 @@ describe('Store на PostgreSQL (PGlite)', () => {
 
     await store.complete({ submissionId: old.submissionId, ok: true, startSec: old.startSec });
     expect(await store.claim()).toMatchObject({ submissionId: 'a', startSec: 75 });
+  });
+
+  it('сброс: показывает, что удаляется, и следующий запуск начинает новый турнир', async () => {
+    const { db, store } = await open();
+    expect(await tournamentSummary(db)).toBeUndefined();
+    await store.initialize(state, [message('1', 'привет')]);
+    await store.commit({ event: { at: 1, event: { kind: 'tick' } }, state, out: [], updateIds: [7] });
+    expect(await tournamentSummary(db)).toEqual({ title: 'Тестовый турнир', events: 1 });
+
+    await dropTournament(db);
+    expect(await tournamentSummary(db)).toBeUndefined();
+    const fresh = await Store.open(db);
+    expect(await fresh.latestSnapshot()).toBeUndefined();
+    expect(await fresh.seenUpdate(7)).toBe(false);
   });
 
   it('взятая до падения задача возвращается в очередь при следующем запуске', async () => {
