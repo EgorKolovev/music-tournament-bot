@@ -61,7 +61,7 @@ export function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <button className="brand" onClick={() => go(null)}>
+        <button type="button" className="brand" onClick={() => go(null)}>
           <span className="logo" aria-hidden>
             🎵
           </span>
@@ -71,11 +71,11 @@ export function App() {
           </span>
         </button>
         <nav className="stage-tabs" aria-label="Этапы турнира">
-          <button className={!location.stage ? 'active' : ''} onClick={() => go(null)}>
+          <button type="button" className={!location.stage ? 'active' : ''} onClick={() => go(null)}>
             Обзор
           </button>
           {STAGES.map((stage) => (
-            <button key={stage.id} className={location.stage?.id === stage.id ? 'active' : ''} onClick={() => go(stage)}>
+            <button type="button" key={stage.id} className={location.stage?.id === stage.id ? 'active' : ''} onClick={() => go(stage)}>
               <span className="step-number">{stage.number}</span> {stage.title}
             </button>
           ))}
@@ -118,6 +118,7 @@ export function StageView({ stage, scenarioId, at, onScenario }: StageViewProps)
   const atEnd = cursor === frames.length - 1;
   const workerEvent = useMemo(() => engine.workerEvent(frame.session), [engine, frame]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: каждый шаг воспроизведения ставит таймер на следующий.
   useEffect(() => {
     if (!playing) return;
     if (atEnd) {
@@ -148,11 +149,11 @@ export function StageView({ stage, scenarioId, at, onScenario }: StageViewProps)
       <section className="toolbar">
         <div className="scenarios" role="tablist" aria-label="Сценарии">
           {stage.scenarios.map((s) => (
-            <button key={s.id} className={s.id === scenarioId && !manual ? 'chip active' : 'chip'} onClick={() => onScenario(s.id)}>
+            <button type="button" key={s.id} className={s.id === scenarioId && !manual ? 'chip active' : 'chip'} onClick={() => onScenario(s.id)}>
               {s.title}
             </button>
           ))}
-          <button className={scenarioId === MANUAL || manual ? 'chip active' : 'chip'} onClick={() => onScenario(MANUAL)}>
+          <button type="button" className={scenarioId === MANUAL || manual ? 'chip active' : 'chip'} onClick={() => onScenario(MANUAL)}>
             ✋ Вручную
           </button>
         </div>
@@ -162,19 +163,19 @@ export function StageView({ stage, scenarioId, at, onScenario }: StageViewProps)
             : (scenario?.description ?? '')}
         </p>
         <div className="controls">
-          <button onClick={() => jump(0)} disabled={cursor === 0} title="В начало" aria-label="В начало">
+          <button type="button" onClick={() => jump(0)} disabled={cursor === 0} title="В начало" aria-label="В начало">
             ⏮
           </button>
-          <button onClick={() => jump(cursor - 1)} disabled={cursor === 0} title="Шаг назад" aria-label="Шаг назад">
+          <button type="button" onClick={() => jump(cursor - 1)} disabled={cursor === 0} title="Шаг назад" aria-label="Шаг назад">
             ◀
           </button>
-          <button onClick={() => setPlaying(!playing)} disabled={atEnd && !playing} className="primary">
+          <button type="button" onClick={() => setPlaying(!playing)} disabled={atEnd && !playing} className="primary">
             {playing ? '⏸ Пауза' : '▶ Проиграть'}
           </button>
-          <button onClick={() => jump(cursor + 1)} disabled={atEnd} title="Шаг вперёд" aria-label="Шаг вперёд">
+          <button type="button" onClick={() => jump(cursor + 1)} disabled={atEnd} title="Шаг вперёд" aria-label="Шаг вперёд">
             ▶
           </button>
-          <button onClick={() => jump(frames.length - 1)} disabled={atEnd} title="В конец" aria-label="В конец">
+          <button type="button" onClick={() => jump(frames.length - 1)} disabled={atEnd} title="В конец" aria-label="В конец">
             ⏭
           </button>
           <input

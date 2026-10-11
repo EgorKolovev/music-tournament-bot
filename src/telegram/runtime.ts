@@ -5,7 +5,7 @@ import type { OutgoingMessage, OutgoingToast, UserId } from '../bot/protocol.ts'
 import type { AudioFile } from '../domain/submission/intake.ts';
 import type { Store } from '../storage/store.ts';
 import type { TournamentEvent } from '../tournament/events.ts';
-import { createTournament, handleEvent, type TournamentConfig, type TournamentState } from '../tournament/tournament.ts';
+import { createTournament, handleEvent, type Step, type TournamentConfig, type TournamentState } from '../tournament/tournament.ts';
 import type { AudioResult } from '../worker/audioProcessor.ts';
 import { isPermanent } from './apiErrors.ts';
 import { Delivery, type Logger, type Trigger } from './delivery.ts';
@@ -161,7 +161,7 @@ export class Runtime {
 
   private async process(event: TournamentEvent, updateIds: number[], trigger?: Trigger): Promise<void> {
     const stamped = { at: this.now(), event };
-    let step;
+    let step: Step;
     try {
       step = handleEvent(this.current, stamped);
     } catch (error) {

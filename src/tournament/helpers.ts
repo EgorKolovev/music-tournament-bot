@@ -1,0 +1,88 @@
+import { matchLabel, matchPlayers } from '../bot/drawSession.ts';
+import { handleIntake } from '../bot/intakeSession.ts';
+import type { MatchSession, Participant } from '../bot/matchSession.ts';
+import type { Incoming, Outgoing, OutgoingMessage, UserId } from '../bot/protocol.ts';
+import { findMatch } from '../domain/bracket/bracket.ts';
+import { formatPoints } from '../domain/match/ruleset.ts';
+import { ORG, type Step, type TournamentState } from './state.ts';
+
+// Общие помощники оркестратора: адресация сообщений, префиксы контекста, имена и счёт.
+
+export const DAY_MS = 24 * 60 * 60_000;
+
+export function intakeStep(state: TournamentState, input: Incoming): Step {
+  const step = handleIntake(state.intake, input);
+  return { state: { ...state, intake: step.session }, out: scope(state, step.out, 'i:') };
+}
+
+// Префикс контекста для slot и callback_data; сообщения организатора уходят ему с префиксом o:.
+export function scope(state: TournamentState, out: readonly Outgoing[], prefix: string, slotPrefix = prefix): Outgoing[] {
+  return out.map((o) => {
+    const toOrganizer = o.to === ORG;
+    const to = toOrganizer ? state.config.organizerId : o.to;
+    if (o.kind === 'toast') return { ...o, to };
+    const buttonPrefix = toOrganizer ? 'o:' : prefix;
+    const slotScope = toOrganizer ? 'o:' : slotPrefix;
+    return {
+      ...o,
+      to,
+      slot: o.slot === undefined ? undefined : `${slotScope}${o.slot}`,
+      buttons: o.buttons?.map((row) => row.map((b) => ({ ...b, data: `${buttonPrefix}${b.data}` }))),
+    };
+  });
+}
+
+export function scopeMatch(state: TournamentState, matchId: string, attempt: number, out: readonly Outgoing[]): Outgoing[] {
+  return scope(state, out, `m:${matchId}:`, `m:${matchId}#${attempt}:`);
+}
+
+export function say(state: TournamentState, to: UserId, text: string): Step {
+  return { state, out: [message(to, text)] };
+}
+
+export function toast(state: TournamentState, to: UserId, text: string): Step {
+  return { state, out: [{ kind: 'toast', to, text }] };
+}
+
+export function message(to: UserId, text: string): OutgoingMessage {
+  return { kind: 'message', to, text };
+}
+
+export function participant(state: TournamentState, id: UserId): Participant {
+  const person = state.people[id];
+  return { id, name: person?.name ?? id };
+}
+
+export function isParticipant(state: TournamentState, id: UserId): boolean {
+  return state.intake.config.participants.some((p) => p.id === id);
+}
+
+export function isOrganizer(state: TournamentState, id: UserId): boolean {
+  return state.config.organizerId === id;
+}
+
+export function canAdmin(state: TournamentState, id: UserId): boolean {
+  return isOrganizer(state, id) || state.config.adminIds.includes(id);
+}
+
+export function matchTitle(state: TournamentState, matchId: string): string {
+  const match = state.draw?.bracket && findMatch(state.draw.bracket, matchId);
+  if (!match) return matchId;
+  const players = state.draw && matchPlayers(state.draw, matchId);
+  const names = players ? `: ${players.map((id) => participant(state, id).name).join(' — ')}` : '';
+  return `${matchLabel(match)}${names}`;
+}
+
+export function scoreLine(session: MatchSession): string {
+  const { match, config } = session;
+  const total: [number, number] = [0, 0];
+  for (const { awards } of match.closedTracks) {
+    if (awards.artist !== null) total[awards.artist] += config.ruleset.artistPoints;
+    if (awards.title !== null) total[awards.title] += config.ruleset.titlePoints;
+  }
+  return `${config.players[0].name} ${formatPoints(total[0])} : ${formatPoints(total[1])} ${config.players[1].name}`;
+}
+
+export function isoDate(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}

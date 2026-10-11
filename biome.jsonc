@@ -1,0 +1,26 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "files": { "includes": ["src/**", "*.ts", "*.json", "!package-lock.json"] },
+  // Пока только линтер: форматирование переписало бы почти каждый файл — отдельным шагом.
+  "formatter": { "enabled": false },
+  "assist": { "enabled": false },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "style": {
+        // С noUncheckedIndexedAccess каждое обращение по индексу — «возможно undefined»;
+        // `!` там, где значение точно есть, — принятый в проекте способ это сказать.
+        "noNonNullAssertion": "off"
+      }
+    }
+  },
+  "overrides": [
+    {
+      // Списки стенда только дописываются и не переставляются: индекс и есть идентичность элемента.
+      "includes": ["src/simulator/**"],
+      "linter": { "rules": { "suspicious": { "noArrayIndexKey": "off" } } }
+    }
+  ]
+}

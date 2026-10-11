@@ -671,10 +671,24 @@ h2 {
   font-size: 13px;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: .log и .tracks — разные списки, правила не пересекаются */
 .log li {
+  border-radius: 6px;
+}
+
+.log-step {
+  all: unset;
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
   padding: 3px 6px;
   border-radius: 6px;
   cursor: pointer;
+}
+
+.log-step:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .log li:hover {

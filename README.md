@@ -95,6 +95,7 @@ npm ci          # нужен Node.js 24
 npm run dev     # стенд на http://localhost:5173
 npm test        # правила, сценарии всех этапов и рендер стенда
 npm run check   # проверка типов
+npm run lint    # линтер Biome; lint:fix — исправить то, что он умеет сам
 npm run build   # сборка стенда в dist/
 npm run bot     # Telegram-бот; нужен PostgreSQL, настройки — в .env (см. .env.example)
 npm run db:backup # копия турнира в backups/; db:restore — вернуть, db:reset — начать новый (бот остановлен)

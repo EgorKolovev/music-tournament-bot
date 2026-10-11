@@ -14,6 +14,7 @@ export function StepLog({ frames, cursor, names, onJump }: Props) {
   const activeRef = useRef<HTMLLIElement>(null);
 
   // Прокручиваем только сам список: scrollIntoView двигал бы и страницу.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: сменился текущий шаг — показать его в списке.
   useEffect(() => {
     const list = listRef.current;
     const item = activeRef.current;
@@ -33,10 +34,11 @@ export function StepLog({ frames, cursor, names, onJump }: Props) {
             key={i}
             ref={i === cursor ? activeRef : undefined}
             className={`${i === cursor ? 'active' : ''}${i > cursor ? ' future' : ''}`}
-            onClick={() => onJump(i)}
           >
-            <span className="muted">{i}</span> {describeInput(f.input, names)}
-            {f.out.some((o) => o.kind === 'toast') && <span className="tag warn">отказ</span>}
+            <button type="button" className="log-step" onClick={() => onJump(i)}>
+              <span className="muted">{i}</span> {describeInput(f.input, names)}
+              {f.out.some((o) => o.kind === 'toast') && <span className="tag warn">отказ</span>}
+            </button>
           </li>
         ))}
       </ol>

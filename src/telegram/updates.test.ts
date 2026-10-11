@@ -66,7 +66,9 @@ describe('FileBatcher', () => {
       },
       clear: (handle) => void pending.delete(handle as number),
     };
-    const fire = () => [...pending.values()].forEach((callback) => callback());
+    const fire = () => {
+      for (const callback of pending.values()) callback();
+    };
     return { timers, fire, pending };
   }
 

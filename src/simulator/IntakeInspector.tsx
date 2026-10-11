@@ -30,7 +30,7 @@ export function IntakeInspector({ frames, cursor, names, highlight, pendingJobs,
           <span>
             В очереди обработки: <strong>{pendingJobs}</strong>
           </span>
-          <button className="primary-button" disabled={pendingJobs === 0} onClick={onWorker}>
+          <button type="button" className="primary-button" disabled={pendingJobs === 0} onClick={onWorker}>
             ⚙️ Обработать
           </button>
         </div>

@@ -34,7 +34,7 @@ export function Overview({ onOpen }: { onOpen: (stage: Stage) => void }) {
                 <li key={decision}>{decision}</li>
               ))}
             </ul>
-            <button className="primary-button" onClick={() => onOpen(stage)}>
+            <button type="button" className="primary-button" onClick={() => onOpen(stage)}>
               Открыть этап →
             </button>
           </li>

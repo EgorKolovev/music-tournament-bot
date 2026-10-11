@@ -25,6 +25,7 @@ export function ChatColumn({ name, role, chat, toasts, pressedData, catalog, onI
   const messages = chat?.messages ?? [];
   const lastId = messages.at(-1)?.id;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: пришло новое сообщение — прокрутить чат вниз.
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
@@ -97,7 +98,7 @@ function BotBubble({
           {message.buttons.map((row, r) => (
             <div key={r} className="kb-row">
               {row.map((button, b) => (
-                <button
+                <button type="button"
                   key={b}
                   className={`kb-button${button.data === NOOP ? ' noop' : ''}${button.data === pressedData ? ' pressed' : ''}`}
                   onClick={() => onPress(button.data)}
@@ -120,7 +121,7 @@ function BotBubble({
 }
 
 function DocumentLink({ document }: { document: NonNullable<BotChatMessage['document']> }) {
-  const href = `data:${document.mimeType};charset=utf-8,${encodeURIComponent('\uFEFF' + document.content)}`;
+  const href = `data:${document.mimeType};charset=utf-8,${encodeURIComponent(`\uFEFF${document.content}`)}`;
   return (
     <a className="document" href={href} download={document.fileName}>
       <span aria-hidden>📄</span>
@@ -178,7 +179,7 @@ function Composer({ catalog, onInput }: { catalog: Record<string, CatalogFile>; 
         <div className="picker">
           <div className="picker-head">
             <strong>Переслать из музыкального бота</strong>
-            <button className="link" onClick={() => setPicking(false)}>
+            <button type="button" className="link" onClick={() => setPicking(false)}>
               Закрыть
             </button>
           </div>
@@ -203,13 +204,13 @@ function Composer({ catalog, onInput }: { catalog: Record<string, CatalogFile>; 
               </li>
             ))}
           </ul>
-          <button className="primary-button" disabled={selected.length === 0} onClick={forward}>
+          <button type="button" className="primary-button" disabled={selected.length === 0} onClick={forward}>
             Переслать {selected.length > 0 ? `(${selected.length})` : ''}
           </button>
         </div>
       )}
       <div className="composer-row">
-        <button className="attach" onClick={() => setPicking(!picking)} title="Переслать файлы" aria-label="Переслать файлы">
+        <button type="button" className="attach" onClick={() => setPicking(!picking)} title="Переслать файлы" aria-label="Переслать файлы">
           📎
         </button>
         <input
@@ -219,7 +220,7 @@ function Composer({ catalog, onInput }: { catalog: Record<string, CatalogFile>; 
           placeholder="Сообщение"
           aria-label="Сообщение боту"
         />
-        <button className="send" onClick={sendText} disabled={!text.trim()} aria-label="Отправить">
+        <button type="button" className="send" onClick={sendText} disabled={!text.trim()} aria-label="Отправить">
           ➤
         </button>
       </div>

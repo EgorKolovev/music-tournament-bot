@@ -5,7 +5,7 @@ import { pgDatabase } from '../storage/database.ts';
 import { Store } from '../storage/store.ts';
 import { checkFfmpeg, createAudioProcessor, createTelegramDownloader } from '../worker/audioProcessor.ts';
 import { skipProcessor, WorkerLoop } from '../worker/workerLoop.ts';
-import { ConfigError, readSettings } from './config.ts';
+import { ConfigError, readSettings, type BotSettings } from './config.ts';
 import type { Logger } from './delivery.ts';
 import { Runtime } from './runtime.ts';
 
@@ -47,7 +47,7 @@ async function setCommands(api: Api, organizerId: string, adminIds: string[]): P
 }
 
 async function main(): Promise<void> {
-  let settings;
+  let settings: BotSettings;
   try {
     settings = readSettings(process.env);
   } catch (error) {

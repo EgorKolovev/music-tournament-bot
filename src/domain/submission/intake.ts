@@ -145,7 +145,7 @@ export function completeProcessing(
   cut: { startSec?: number; gameFileId?: string } = {},
 ): IntakeState {
   const current = find(state, submissionId);
-  if (!current || current.processing !== 'pending' || current.rejection) return state;
+  if (current?.processing !== 'pending' || current.rejection) return state;
   if (cut.startSec !== undefined && cut.startSec !== current.startSec) return state;
   if (ok) return update(state, submissionId, { processing: 'ok', gameFileId: cut.gameFileId ?? current.gameFileId });
   state = releaseSong(state, current);
@@ -198,7 +198,7 @@ function releaseSong(state: IntakeState, submission: Submission): IntakeState {
   if (!submission.meta) return state;
   const key = songKey(submission.meta.artist, submission.meta.title);
   const entry = state.songs[key];
-  if (!entry || !entry.submissionIds.includes(submission.id)) return state;
+  if (!entry?.submissionIds.includes(submission.id)) return state;
   const submissionIds = entry.submissionIds.filter((id) => id !== submission.id);
   return { ...state, songs: { ...state.songs, [key]: { ...entry, submissionIds } } };
 }

@@ -14,8 +14,7 @@ export interface Stage {
   summary: string;
   // Ключевые решения этапа из docs/decisions/2026-10-08-mechanics-revision.md.
   decisions: string[];
-  // Сессии движков разные; симулятор работает с ними одинаково через кадры.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: сессии движков разные; симулятор работает с ними одинаково через кадры.
   engine: Engine<any>;
   scenarios: Scenario[];
 }
