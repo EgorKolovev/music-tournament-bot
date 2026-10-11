@@ -28,10 +28,8 @@ export function readSettings(env: Record<string, string | undefined>): BotSettin
   if (!token) throw new ConfigError('Не задан BOT_TOKEN — токен тестового бота из @BotFather.');
   const organizerId = env.ORGANIZER_ID?.trim();
   if (!organizerId || !/^\d+$/.test(organizerId)) throw new ConfigError('Не задан ORGANIZER_ID — Telegram ID организатора.');
-  const databaseUrl = env.DATABASE_URL?.trim();
-  if (!databaseUrl) {
-    throw new ConfigError('Не задан DATABASE_URL — адрес PostgreSQL, например postgres://localhost:5432/tournament.');
-  }
+  // По умолчанию — локальный PostgreSQL из Homebrew: пользователь системы без пароля.
+  const databaseUrl = env.DATABASE_URL?.trim() || 'postgres://localhost:5432/tournament';
 
   const audioMode = (env.AUDIO_MODE ?? 'ffmpeg').trim();
   if (audioMode !== 'ffmpeg' && audioMode !== 'skip') throw new ConfigError('AUDIO_MODE: ffmpeg или skip.');

@@ -11,7 +11,7 @@
 
 ## Локально
 
-Нужен Node.js 24, PostgreSQL и, для обработки аудио, ffmpeg. Адрес базы — `DATABASE_URL` в `.env`; таблицы бот создаёт сам при первом запуске.
+Нужен Node.js 24, PostgreSQL и, для обработки аудио, ffmpeg. Адрес базы — `DATABASE_URL` в `.env`, по умолчанию `postgres://localhost:5432/tournament`; таблицы бот создаёт сам при первом запуске.
 
 ```bash
 npm run bot
