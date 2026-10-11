@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { GrammyError, InputFile } from 'grammy';
 import { FakeApi, silentLog } from '../telegram/fakeApi.ts';
-import { createAudioProcessor, gameArgs, type AudioProcessorDeps } from './audioProcessor.ts';
+import { checkFfmpeg, createAudioProcessor, gameArgs, type AudioProcessorDeps } from './audioProcessor.ts';
 
 const hasFfmpeg =
   spawnSync('ffmpeg', ['-version']).status === 0 && spawnSync('ffprobe', ['-version']).status === 0;
@@ -164,5 +164,15 @@ describe('createAudioProcessor', () => {
     const { api, process } = setup(() => new Uint8Array());
     api.failNext('getFile', 502, 'Bad Gateway');
     await expect(process({ submissionId: 's5', fileId: 'F5', startSec: 0 })).rejects.toBeInstanceOf(GrammyError);
+  });
+});
+
+describe('checkFfmpeg', () => {
+  it('нет ffmpeg — понятная причина, а не повторы задач', async () => {
+    expect(await checkFfmpeg('/нет/ffmpeg', 'ffprobe')).toMatch(/^\/нет\/ffmpeg не найден \(.*ENOENT/);
+  });
+
+  it.skipIf(!hasFfmpeg)('ffmpeg и ffprobe на месте', async () => {
+    expect(await checkFfmpeg('ffmpeg', 'ffprobe')).toBeUndefined();
   });
 });

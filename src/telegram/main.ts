@@ -3,7 +3,7 @@ import { Bot, GrammyError } from 'grammy';
 import pg from 'pg';
 import { pgDatabase } from '../storage/database.ts';
 import { Store } from '../storage/store.ts';
-import { createAudioProcessor, createTelegramDownloader } from '../worker/audioProcessor.ts';
+import { checkFfmpeg, createAudioProcessor, createTelegramDownloader } from '../worker/audioProcessor.ts';
 import { skipProcessor, WorkerLoop } from '../worker/workerLoop.ts';
 import { ConfigError, readSettings } from './config.ts';
 import type { Logger } from './delivery.ts';
@@ -29,6 +29,16 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     throw error;
+  }
+  if (settings.audioMode === 'ffmpeg') {
+    const problem = await checkFfmpeg(settings.ffmpegPath, settings.ffprobePath);
+    if (problem) {
+      console.error(
+        `AUDIO_MODE=ffmpeg, но ${problem}.\n` +
+          'Поставьте ffmpeg (macOS: brew install ffmpeg) или укажите в .env AUDIO_MODE=skip — без нарезки, судья включает песни сам.',
+      );
+      process.exit(1);
+    }
   }
 
   const bot = new Bot(settings.token, { client: { apiRoot: settings.apiBaseUrl } });

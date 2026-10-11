@@ -217,6 +217,20 @@ export function run(command: string, args: string[], timeoutMs: number): Promise
   });
 }
 
+// Проверка при запуске: без ffmpeg worker не запустил бы ни одной задачи, и через пять повторов
+// все песни выглядели бы битыми. undefined — оба инструмента на месте, иначе — что не так.
+export async function checkFfmpeg(ffmpegPath: string, ffprobePath: string): Promise<string | undefined> {
+  for (const tool of [ffmpegPath, ffprobePath]) {
+    try {
+      const { code } = await run(tool, ['-version'], 10_000);
+      if (code !== 0) return `${tool} -version завершился с кодом ${code}`;
+    } catch (error) {
+      return `${tool} не найден (${error instanceof Error ? error.message : String(error)})`;
+    }
+  }
+  return undefined;
+}
+
 // Файл больше предела — окончательная ошибка файла, а не временная.
 export class TooLargeError extends Error {
   constructor() {
