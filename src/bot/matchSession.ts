@@ -219,7 +219,7 @@ function message(slot: string, text: string, buttons?: Button[][]): Draft {
 }
 
 function renderJudge(session: MatchSession): Draft[] {
-  const { match, issued, config } = session;
+  const { issued, config } = session;
   const drafts: Draft[] = [
     message('panel:lobby', lobbyText(session), issued.length === 0 ? currentButtons(session) : undefined),
   ];

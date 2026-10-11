@@ -3,7 +3,7 @@ import { matchPlayers } from '../bot/drawSession.ts';
 import type { UserId } from '../bot/protocol.ts';
 import { openMatches } from '../domain/bracket/bracket.ts';
 import { formatClock } from '../shared/text.ts';
-import { ORGANIZER, sender, TestBot, testConfig, violations } from './testBot.ts';
+import { ORGANIZER, sender, TestBot, violations } from './testBot.ts';
 
 const PLAYERS = ['1', '2', '3', '4', '5'];
 const GUEST = '6';
