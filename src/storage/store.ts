@@ -87,6 +87,65 @@ export async function dropTournament(db: Database): Promise<void> {
   await db.exec(`DROP TABLE IF EXISTS ${TABLES.join(', ')}`);
 }
 
+// Копия турнира для локальной разработки: строки всех таблиц бота в JSON, без pg_dump.
+export interface TournamentDump {
+  format: 'music-tournament';
+  version: 1;
+  title: string;
+  createdAt: string;
+  tables: Record<string, Record<string, unknown>[]>;
+}
+
+// Счётчики, которые после восстановления должны продолжиться с последнего номера.
+const SERIALS = [
+  ['events', 'seq'],
+  ['outbox', 'id'],
+  ['jobs', 'seq'],
+] as const;
+
+// Все таблицы одним согласованным срезом: копию можно снимать, пока бот работает.
+export async function exportTournament(db: Database, createdAt: Date): Promise<TournamentDump | undefined> {
+  const summary = await tournamentSummary(db);
+  if (!summary) return undefined;
+  const tables = await db.transaction(async (tx) => {
+    await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+    const result: TournamentDump['tables'] = {};
+    for (const table of TABLES) {
+      const { rows } = await tx.query<{ rows: Record<string, unknown>[] }>(
+        `SELECT coalesce(json_agg(t), '[]'::json) AS rows FROM ${table} t`,
+      );
+      result[table] = rows[0]!.rows;
+    }
+    return result;
+  });
+  return { format: 'music-tournament', version: 1, title: summary.title, createdAt: createdAt.toISOString(), tables };
+}
+
+// Заменить турнир в базе копией. Колонки, которых в копии нет (она снята старой версией бота),
+// получают значения по умолчанию.
+export async function importTournament(db: Database, dump: TournamentDump): Promise<void> {
+  if (dump?.format !== 'music-tournament' || dump.version !== 1) throw new Error('это не копия турнира');
+  await dropTournament(db);
+  await Store.open(db);
+  await db.transaction(async (tx) => {
+    for (const table of TABLES) {
+      const rows = dump.tables[table] ?? [];
+      if (rows.length === 0) continue;
+      const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+      if (columns.some((c) => !/^[a-z_]+$/.test(c))) throw new Error(`непонятная колонка в таблице ${table}`);
+      const list = columns.join(', ');
+      await tx.query(`INSERT INTO ${table} (${list}) SELECT ${list} FROM json_populate_recordset(null::${table}, $1)`, [
+        JSON.stringify(rows),
+      ]);
+    }
+    for (const [table, column] of SERIALS) {
+      await tx.query(
+        `SELECT setval(pg_get_serial_sequence('${table}', '${column}'), coalesce(max(${column}), 0) + 1, false) FROM ${table}`,
+      );
+    }
+  });
+}
+
 export class Store implements SlotStore, JobSource {
   private readonly db: Database;
   private sinceSnapshot = 0;

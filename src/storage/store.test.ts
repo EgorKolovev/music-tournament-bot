@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { OutgoingMessage } from '../bot/protocol.ts';
 import { createTournament } from '../tournament/tournament.ts';
 import { testConfig } from '../tournament/testBot.ts';
-import { dropTournament, Store, tournamentSummary } from './store.ts';
+import { dropTournament, exportTournament, importTournament, Store, tournamentSummary } from './store.ts';
 import { testDatabase, type TestDatabase } from './testDatabase.ts';
 
 const databases: TestDatabase[] = [];
@@ -115,6 +115,46 @@ describe('Store на PostgreSQL (PGlite)', () => {
     const fresh = await Store.open(db);
     expect(await fresh.latestSnapshot()).toBeUndefined();
     expect(await fresh.seenUpdate(7)).toBe(false);
+  });
+
+  it('копия: турнир переносится в другую базу как был, номера журнала продолжаются', async () => {
+    const { db, store } = await open();
+    expect(await exportTournament(db, new Date())).toBeUndefined();
+    await store.initialize(state, [message('1', 'привет')]);
+    await store.commit({ event: { at: 1, event: { kind: 'tick' } }, state, out: [message('2', 'ход')], updateIds: [7] });
+    await store.enqueueJobs([{ submissionId: 'a', fileId: 'A', sizeBytes: 3_000_000_000, startSec: 30 }]);
+    await store.set('1', 'i:list', { messageId: 42, kind: 'text' });
+
+    const dump = (await exportTournament(db, new Date('2026-10-12T10:00:00Z')))!;
+    expect(dump).toMatchObject({ format: 'music-tournament', version: 1, title: 'Тестовый турнир', createdAt: '2026-10-12T10:00:00.000Z' });
+    // Через JSON — как через файл.
+    const { db: other } = await open();
+    await importTournament(other, JSON.parse(JSON.stringify(dump)));
+
+    const restored = await Store.open(other);
+    expect(await restored.latestSnapshot()).toEqual(await store.latestSnapshot());
+    expect(await restored.eventsAfter(0)).toEqual(await store.eventsAfter(0));
+    expect(await restored.seenUpdate(7)).toBe(true);
+    expect(await restored.get('1', 'i:list')).toMatchObject({ messageId: 42, kind: 'text' });
+    expect(await restored.claim()).toEqual({ submissionId: 'a', fileId: 'A', sizeBytes: 3_000_000_000, startSec: 30 });
+    expect((await restored.pendingOutbox(10)).map((m) => m.message.text)).toEqual(['привет', 'ход']);
+
+    await restored.commit({ event: { at: 2, event: { kind: 'tick' } }, state, out: [message('3', 'дальше')], updateIds: [] });
+    const { rows } = await other.query<{ seq: number }>('SELECT seq FROM events ORDER BY seq');
+    expect(rows.map((r) => r.seq)).toEqual([1, 2]);
+  });
+
+  it('копия старой версии бота: недостающие колонки получают значения по умолчанию', async () => {
+    const { db, store } = await open();
+    await store.initialize(state, []);
+    await store.enqueueJobs([{ submissionId: 'a', fileId: 'A', startSec: 0 }]);
+    const dump = (await exportTournament(db, new Date()))!;
+    for (const row of dump.tables.jobs!) delete row.start_sec;
+
+    const { db: other } = await open();
+    await importTournament(other, dump);
+    expect(await (await Store.open(other)).claim()).toMatchObject({ submissionId: 'a', startSec: 0 });
+    await expect(importTournament(other, { ...dump, format: 'другое' } as never)).rejects.toThrow('не копия турнира');
   });
 
   it('взятая до падения задача возвращается в очередь при следующем запуске', async () => {

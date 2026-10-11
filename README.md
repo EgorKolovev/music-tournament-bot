@@ -96,7 +96,7 @@ npm test        # правила, сценарии всех этапов и ре
 npm run check   # проверка типов
 npm run build   # сборка стенда в dist/
 npm run bot     # Telegram-бот; нужен PostgreSQL, настройки — в .env (см. .env.example)
-npm run db:reset  # стереть турнир из базы и начать новый (бот должен быть остановлен)
+npm run db:backup # копия турнира в backups/; db:restore — вернуть, db:reset — начать новый (бот остановлен)
 docker compose up -d --build   # бот на сервере
 ```
 
