@@ -128,7 +128,7 @@ function welcomeMessage(session: IntakeSession, p: Participant): OutgoingMessage
       '',
       `Пришли до ${session.config.rules.maxSubmissions} песен — пересылай пачкой, хоть все сразу, из @Music_to_you_bot или откуда удобно.`,
       'Исполнителя и название возьму из файла; если не получится — спрошу.',
-      `Судья услышит фрагмент до ${session.config.fragmentSec} секунд — с начала песни или с места, которое выберешь сам.`,
+      `Судья услышит фрагмент до ${session.config.fragmentSec} секунд — с начала песни, с места, которое выберешь сам, или со случайного.`,
       'На отбор и финал песни разделю сам после закрытия сбора.',
     ].join('\n'),
   };
@@ -280,6 +280,7 @@ type ButtonResult = { session: IntakeSession } | { toast: string };
 
 function handleButton(session: IntakeSession, from: UserId, data: string): ButtonResult {
   if (data === 'cancel') return { session: setUi(session, from, { mode: { kind: 'idle' }, notice: null }) };
+  if (data === 'randomAll') return randomAll(session, from);
 
   const shift = /^shift:(\w+):(-?\d+)$/.exec(data);
   if (shift) {
@@ -347,22 +348,13 @@ function handleOrganizer(session: IntakeSession, data: string): ButtonResult {
   return { toast: 'Сейчас это действие недоступно' };
 }
 
-// Случайное начало: фрагмент целиком в песне и не в концовке. Бросок зависит от seed турнира
-// и счётчика бросков участника, поэтому повтор журнала даёт то же начало.
+// Случайное начало одной песни: из подсказки «⏱ Начало» или из-под фрагмента.
 function randomStart(session: IntakeSession, from: UserId, target: Submission): ButtonResult {
   if (target.file.durationSec === undefined) return { toast: 'Не знаю длину песни — напиши время сам' };
-  const latest = latestStart(target, session.config.fragmentSec, OUTRO_SEC);
-  if (latest === 0) return { toast: 'Песня короткая — случайное место не выбрать' };
-
   const ui = session.ui[from]!;
-  let rolls = ui.rolls;
-  let startSec = target.startSec;
-  // Выпало то же место — бросаем ещё раз, иначе нажатие ничего не изменит.
-  for (let tries = 0; startSec === target.startSec && tries < 20; tries++) {
-    rolls++;
-    const random = seededRandom(session.config.seed ^ hashText(`${target.id}:${rolls}`));
-    startSec = Math.floor(random() * (latest + 1));
-  }
+  const roll = rollStart(session.config, target, ui.rolls);
+  if (!roll) return { toast: 'Песня короткая — случайное место не выбрать' };
+  const { startSec, rolls } = roll;
   const intake = setStart(session.intake, target.id, startSec);
   const fromPrompt = ui.mode.kind === 'awaitStart';
   const number = ordered(session, from).findIndex((s) => s.id === target.id) + 1;
@@ -377,6 +369,49 @@ function randomStart(session: IntakeSession, from: UserId, target: Submission): 
       }),
     }),
   };
+}
+
+// Случайное начало всем песням участника разом — для тех, кому выбирать незачем.
+function randomAll(session: IntakeSession, from: UserId): ButtonResult {
+  const songs = ordered(session, from).filter((s) => !s.rejection);
+  if (songs.length === 0) return { toast: 'Пока нечего выбирать' };
+  let { intake } = session;
+  let rolls = session.ui[from]!.rolls;
+  let changed = 0;
+  for (const song of songs) {
+    const roll = rollStart(session.config, song, rolls);
+    if (!roll) continue;
+    rolls = roll.rolls;
+    intake = setStart(intake, song.id, roll.startSec);
+    changed++;
+  }
+  if (changed === 0) return { toast: 'Песни короткие или без длины — случайное начало не выбрать' };
+  const kept = songs.length - changed;
+  const notice =
+    `🎲 Случайное начало у ${changed} ${plural(changed, 'песни', 'песен', 'песен')}` +
+    (kept > 0 ? `, у ${kept} — прежнее: короткие или без длины` : '') +
+    '. Послушать — «🎧 Послушать».';
+  return { session: setUi({ ...session, intake }, from, { mode: { kind: 'idle' }, rolls, notice }) };
+}
+
+// Бросок: фрагмент целиком в песне и не в концовке. Зависит от seed турнира и счётчика бросков
+// участника, поэтому повтор журнала даёт то же начало. undefined — длина неизвестна или песня короткая.
+function rollStart(
+  config: IntakeSessionConfig,
+  song: Submission,
+  rolls: number,
+): { startSec: number; rolls: number } | undefined {
+  if (song.file.durationSec === undefined) return undefined;
+  const latest = latestStart(song, config.fragmentSec, OUTRO_SEC);
+  if (latest === 0) return undefined;
+  let startSec = song.startSec;
+  // Выпало то же место — бросаем ещё раз, иначе нажатие ничего не изменит.
+  for (let tries = 0; startSec === song.startSec && tries < 20; tries++) {
+    rolls++;
+    const random = seededRandom(config.seed ^ hashText(`${song.id}:${rolls}`));
+    startSec = Math.floor(random() * (latest + 1));
+  }
+  return { startSec, rolls };
 }
 
 function setUi(session: IntakeSession, userId: UserId, patch: Partial<UserUi>): IntakeSession {
@@ -455,10 +490,7 @@ function renderList(session: IntakeSession, userId: UserId): OutgoingMessage {
 
   const active = list.filter((s) => !s.rejection);
   if (active.length > 0) lines.push('');
-  for (const s of active) {
-    const start = s.startSec > 0 ? ` · с ${formatClock(s.startSec)}` : '';
-    lines.push(`${number.get(s.id)}. ${labelOf(s)} ${statusMark(s)}${start}`);
-  }
+  for (const s of active) lines.push(`${number.get(s.id)}. ${labelOf(s)} ${statusMark(s)} · с ${formatClock(s.startSec)}`);
   const rejected = list.filter((s) => s.rejection);
   if (rejected.length > 0) {
     lines.push('', 'Не подошло — пришли замену:');
@@ -528,6 +560,7 @@ function listButtons(
       { label: '⏱ Начало', data: 'pick:start' },
       { label: '🎧 Послушать', data: 'pick:listen' },
     ],
+    [{ label: '🎲 Случайное начало всем', data: 'randomAll' }],
   ];
 }
 

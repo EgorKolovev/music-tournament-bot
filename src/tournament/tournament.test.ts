@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { matchPlayers } from '../bot/drawSession.ts';
 import type { UserId } from '../bot/protocol.ts';
 import { openMatches } from '../domain/bracket/bracket.ts';
-import { ORGANIZER, TestBot, testConfig, violations } from './testBot.ts';
+import { formatClock } from '../shared/text.ts';
+import { ORGANIZER, sender, TestBot, testConfig, violations } from './testBot.ts';
 
 const PLAYERS = ['1', '2', '3', '4', '5'];
 const GUEST = '6';
@@ -142,6 +143,39 @@ describe('Начало фрагмента', () => {
   function list(bot: TestBot): string {
     return bot.chats[ID]!.messages.find((m) => m.author === 'bot' && m.slot === 'i:list')?.text ?? '';
   }
+
+  it('начало видно у каждой песни сразу после загрузки', () => {
+    const bot = withSongs();
+    expect(list(bot)).toContain('1. Группа 1-0 — Песня 0 ✅ · с 0:00');
+    expect(list(bot).match(/· с 0:00/g)).toHaveLength(3);
+  });
+
+  it('случайное начало всем одним нажатием; песне без длины начало не меняется', () => {
+    const play = () => {
+      const bot = withSongs();
+      const file = { fileId: 'F-doc', fileUniqueId: 'U-doc', mimeType: 'audio/mpeg', sizeBytes: 5_000_000, performer: 'Док', title: 'Без длины' };
+      bot.send({ kind: 'files', from: sender(ID), files: [file] });
+      bot.processAudio();
+      bot.press(ID, 'i:randomAll');
+      return bot;
+    };
+    const bot = play();
+    const starts = [0, 1, 2].map((i) => song(bot, i).startSec);
+    // Песня 180 с, фрагмент 60 с, без последних 20 с: начало от 0:01 до 1:40.
+    for (const start of starts) {
+      expect(start).toBeGreaterThan(0);
+      expect(start).toBeLessThanOrEqual(100);
+    }
+    expect(song(bot, 3).startSec).toBe(0);
+    expect(list(bot)).toContain('Случайное начало у 3 песен, у 1 — прежнее');
+    for (const start of starts) expect(list(bot)).toContain(`· с ${formatClock(start)}`);
+
+    // Перенарезка по новым началам и тот же результат при повторе событий.
+    expect(song(bot).processing).toBe('pending');
+    bot.processAudio();
+    expect(song(bot).processing).toBe('ok');
+    expect([0, 1, 2].map((i) => song(play(), i).startSec)).toEqual(starts);
+  });
 
   it('автор пишет время — песня перенарезается и приходит послушать', () => {
     const bot = withSongs();
