@@ -30,8 +30,9 @@ export interface FinalSessionConfig {
   finalists: Participant[];
   judge: Participant;
   organizer: Participant;
-  // Кто действует в симуляторе; за остальных финалистов готовность и подтверждения ставятся сами.
-  interactive: UserId[];
+  // Симулятор: кто действует в колонках; за остальных финалистов готовность и подтверждения
+  // ставятся сами. В боте не задаётся — все люди настоящие.
+  interactive?: UserId[];
   library: LibrarySong[];
   ruleset: Ruleset;
   seed: number;
@@ -169,9 +170,10 @@ function settle(session: FinalSession): FinalStep {
   for (let guard = 0; guard < 4 && session.current; guard++) {
     const { match, config } = session.current.session;
     const { phase } = match;
-    const background = config.players
-      .map((p, slot) => ({ p, slot }))
-      .filter(({ p }) => !session.config.interactive.includes(p.id));
+    const { interactive } = session.config;
+    const background = interactive
+      ? config.players.map((p, slot) => ({ p, slot })).filter(({ p }) => !interactive.includes(p.id))
+      : [];
     const pending = background.find(({ slot }) =>
       phase.kind === 'lobby'
         ? !phase.playersReady[slot]
@@ -214,6 +216,7 @@ function scoped(matchId: string, out: Outgoing[]): Outgoing[] {
 
 function isVisible(session: FinalSession, o: Outgoing): boolean {
   const { config } = session;
+  if (!config.interactive) return true;
   return o.to === config.judge.id || o.to === config.organizer.id || config.interactive.includes(o.to);
 }
 
@@ -254,7 +257,7 @@ function offlineKit(session: FinalSession): OutgoingMessage {
 
 // --- Рендер ---------------------------------------------------------------------
 
-function renderOrganizer(session: FinalSession): OutgoingMessage {
+export function renderOrganizer(session: FinalSession): OutgoingMessage {
   const { bracket, results, current } = session;
   const lines = ['🏆 Финал · 8 → 4 → 2 → 1', `Судья финала: ${session.config.judge.name} (не участник турнира)`, ''];
   const titles = ['Четвертьфиналы', 'Полуфиналы', 'Финал'];

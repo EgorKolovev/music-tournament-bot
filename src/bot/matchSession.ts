@@ -29,6 +29,8 @@ export interface LibrarySong extends PoolSong {
   title: string;
   acceptedAnswers?: string[];
   audioUrl?: string;
+  // file_id игровой версии в Telegram — его выдаёт worker после обработки.
+  audioFileId?: string;
 }
 
 export interface MatchSessionConfig {
@@ -226,7 +228,7 @@ function renderJudge(session: MatchSession): Draft[] {
       kind: 'message',
       slot: `audio:${index}`,
       text: '',
-      audio: { title: `Трек ${track.number}`, performer: 'Музыкальный турнир', url: song.audioUrl },
+      audio: { title: `Трек ${track.number}`, performer: 'Музыкальный турнир', url: song.audioUrl, fileId: song.audioFileId },
     });
     drafts.push(message(`answers:${index}`, answersText(track.number, song)));
     drafts.push(

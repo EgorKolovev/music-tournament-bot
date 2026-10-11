@@ -15,7 +15,9 @@ export interface AudioAttachment {
   // Нейтральные title/performer, которые увидит судья в плеере Telegram.
   title: string;
   performer: string;
+  // Симулятор проигрывает по url, Telegram отправляет игровую версию по file_id.
   url?: string;
+  fileId?: string;
 }
 
 export interface OutgoingMessage {
@@ -49,7 +51,8 @@ export type Incoming =
   // адаптер собирает их по media_group_id и короткой паузе.
   | { kind: 'files'; from: UserId; files: AudioFile[] }
   // Внутреннее событие: worker закончил обработку файлов.
-  | { kind: 'worker'; results: { submissionId: string; ok: boolean }[] };
+  // gameFileId — file_id обезличенной игровой версии в Telegram, если worker её собрал.
+  | { kind: 'worker'; results: { submissionId: string; ok: boolean; gameFileId?: string }[] };
 
 export type UserIncoming = Exclude<Incoming, { kind: 'worker' }>;
 
@@ -59,14 +62,18 @@ export const NOOP = 'noop';
 export const TELEGRAM_LIMITS = {
   callbackDataBytes: 64,
   messageTextChars: 4096,
+  // Подпись к аудио и документу — отдельный, более жёсткий лимит.
+  captionChars: 1024,
   buttonsPerRow: 8,
   buttonRows: 100,
 } as const;
 
 export function limitViolations(message: OutgoingMessage): string[] {
   const problems: string[] = [];
-  if (message.text.length > TELEGRAM_LIMITS.messageTextChars) {
-    problems.push(`текст ${message.text.length} > ${TELEGRAM_LIMITS.messageTextChars} символов`);
+  const isCaption = message.audio !== undefined || message.document !== undefined;
+  const textLimit = isCaption ? TELEGRAM_LIMITS.captionChars : TELEGRAM_LIMITS.messageTextChars;
+  if (message.text.length > textLimit) {
+    problems.push(`${isCaption ? 'подпись' : 'текст'} ${message.text.length} > ${textLimit} символов`);
   }
   const rows = message.buttons ?? [];
   if (rows.length > TELEGRAM_LIMITS.buttonRows) problems.push(`рядов кнопок ${rows.length}`);

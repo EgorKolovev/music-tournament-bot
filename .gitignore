@@ -29,7 +29,7 @@ Thumbs.db
 
 # Runtime data, audio, exports, and backups — music and user data never go to the repo
 data/
-storage/
+/storage/
 uploads/
 exports/
 backups/

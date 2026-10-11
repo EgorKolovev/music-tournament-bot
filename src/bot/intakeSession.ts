@@ -88,19 +88,23 @@ export function openIntakeSession(config: IntakeSessionConfig): IntakeStep {
   for (const s of pendingProcessing(intake)) intake = completeProcessing(intake, s.id, true);
 
   const session: IntakeSession = { config, intake, ui, closed: null };
-  const welcome: OutgoingMessage[] = config.participants.map((p) => ({
+  const welcome = config.participants.map((p) => welcomeMessage(session, p));
+  return { session, out: [...welcome, ...render(session)] };
+}
+
+function welcomeMessage(session: IntakeSession, p: Participant): OutgoingMessage {
+  return {
     kind: 'message',
     to: p.id,
     slot: 'welcome',
     text: [
       `Привет, ${p.name}! Собираем песни для турнира.`,
       '',
-      `Пришли до ${config.rules.maxSubmissions} песен — пересылай пачкой, хоть все сразу, из @Music_to_you_bot или откуда удобно.`,
+      `Пришли до ${session.config.rules.maxSubmissions} песен — пересылай пачкой, хоть все сразу, из @Music_to_you_bot или откуда удобно.`,
       'Исполнителя и название возьму из файла; если не получится — спрошу.',
       'На отбор и финал песни разделю сам после закрытия сбора.',
     ].join('\n'),
-  }));
-  return { session, out: [...welcome, ...render(session)] };
+  };
 }
 
 export function handleIntake(session: IntakeSession, input: Incoming): IntakeStep {
@@ -136,6 +140,17 @@ export function handleIntake(session: IntakeSession, input: Incoming): IntakeSte
 
   const author = input.kind === 'text' || input.kind === 'files' ? input.from : undefined;
   return emit(next, before, author);
+}
+
+// Участник зарегистрировался в боте во время сбора: получает приветствие и пустой список.
+export function joinIntake(session: IntakeSession, participant: Participant): IntakeStep {
+  if (allParticipants(session.config).some((p) => p.id === participant.id)) return { session, out: [] };
+  const before = render(session);
+  const config = { ...session.config, participants: [...session.config.participants, participant] };
+  const ui = { ...session.ui, [participant.id]: { mode: { kind: 'idle' } as Mode, notice: null, activity: 0, listPostedAt: 0 } };
+  const next: IntakeSession = { ...session, config, ui };
+  const step = emit(next, before);
+  return { session: step.session, out: [welcomeMessage(next, participant), ...step.out] };
 }
 
 export function pendingSubmissions(session: IntakeSession): Submission[] {

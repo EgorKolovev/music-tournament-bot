@@ -2,9 +2,11 @@ import {
   buildQualifierBracket,
   findMatch,
   playedMatches,
+  qualified,
   resolveSlot,
   type Bracket,
   type BracketMatch,
+  type Results,
   type Slot,
 } from '../domain/bracket/bracket.ts';
 import { plural } from '../shared/text.ts';
@@ -17,8 +19,9 @@ import type { Button, Incoming, Outgoing, OutgoingMessage, UserId } from './prot
 
 export interface DrawSessionConfig {
   players: Participant[];
-  // Кто действует в симуляторе; остальным сообщения не рендерятся.
-  interactive: UserId[];
+  // Симулятор: кто действует в колонках; остальным сообщения не рендерятся, а их согласие
+  // судить ставится само. В боте не задаётся — все люди настоящие.
+  interactive?: UserId[];
   // Зарегистрированные в боте, кого можно позвать судьёй (игроки, выбывшие, гости).
   registered: Participant[];
   usernames: Record<UserId, string>;
@@ -31,7 +34,8 @@ export interface DrawSessionConfig {
 }
 
 interface JudgeAssignment {
-  proposedBy: UserId;
+  // Не задан, если судья пришёл по ссылке-приглашению.
+  proposedBy?: UserId;
   candidate: UserId;
   accepted: boolean;
   confirmedBy: UserId[];
@@ -42,6 +46,8 @@ type Mode = { kind: 'idle' } | { kind: 'pickJudge' };
 export interface DrawSession {
   config: DrawSessionConfig;
   bracket: Bracket | null;
+  // Подтверждённые результаты матчей отбора: matchId → победитель.
+  results: Results;
   deadlines: string[];
   judges: Record<string, JudgeAssignment>;
   modes: Record<UserId, Mode>;
@@ -61,6 +67,7 @@ export function openDrawSession(config: DrawSessionConfig): DrawStep {
   const session: DrawSession = {
     config,
     bracket: null,
+    results: {},
     deadlines: config.deadlines,
     judges: {},
     modes: {},
@@ -79,10 +86,70 @@ export function handleDraw(session: DrawSession, input: Incoming): DrawStep {
       : handlePlayer(session, input.from, input.data);
   if ('toast' in result) return { session, out: [{ kind: 'toast', to: input.from, text: result.toast }] };
 
-  const next = result.session;
+  return emit(result.session, before);
+}
+
+function emit(next: DrawSession, before: OutgoingMessage[]): DrawStep {
   const previous = new Map(before.map((m) => [`${m.to}/${m.slot}`, JSON.stringify(m)]));
   const changed = render(next).filter((m) => previous.get(`${m.to}/${m.slot}`) !== JSON.stringify(m));
   return { session: { ...next, notifications: [] }, out: [...changed, ...next.notifications] };
+}
+
+// Результат подтверждённого матча (или технический результат организатора) двигает сетку.
+export function recordResult(session: DrawSession, matchId: string, winner: UserId, note?: string): DrawStep {
+  const before = render(session);
+  const match = session.bracket && findMatch(session.bracket, matchId);
+  if (!match || !playersIn(session, match).includes(winner)) return { session, out: [] };
+  const journal = [...session.journal, `${matchLabel(match)}: победа ${nameOf(session, winner)}${note ? ` (${note})` : ''}`];
+  return emit({ ...session, results: { ...session.results, [matchId]: winner }, journal }, before);
+}
+
+// Человек зарегистрировался после жеребьёвки — его можно звать судьёй.
+export function registerPerson(session: DrawSession, person: Participant, username?: string): DrawStep {
+  if (session.config.registered.some((p) => p.id === person.id)) return { session, out: [] };
+  const before = render(session);
+  const config = {
+    ...session.config,
+    registered: [...session.config.registered, person],
+    usernames: username ? { ...session.config.usernames, [person.id]: `@${username}` } : session.config.usernames,
+  };
+  return emit({ ...session, config }, before);
+}
+
+// Ссылка t.me/<бот>?start=judge_<matchId>: открывший её получает приглашение; согласие
+// судьи и подтверждение обоих игроков всё равно нужны — знание ссылки прав не даёт.
+export function inviteByLink(session: DrawSession, matchId: string, userId: UserId): DrawStep {
+  const notice = (text: string): DrawStep => ({ session, out: [{ kind: 'message', to: userId, text }] });
+  const match = session.bracket && findMatch(session.bracket, matchId);
+  if (!match || match.isBye || session.results[matchId]) return notice('Это приглашение уже неактуально.');
+  if (playersIn(session, match).includes(userId)) return notice('Это твой собственный матч — судить его нельзя.');
+  const current = session.judges[matchId];
+  if (current?.candidate === userId) return emit(session, []);
+  if (current?.accepted) return notice('У этого матча уже есть судья.');
+  if (!judgeCandidates(session, match).some((p) => p.id === userId)) {
+    return notice('Сейчас ты не можешь судить этот матч: судья ведёт один матч за раз.');
+  }
+  const before = render(session);
+  const assignment: JudgeAssignment = { candidate: userId, accepted: false, confirmedBy: [] };
+  const journal = [...session.journal, `${nameOf(session, userId)} открыл ссылку судьи ${matchLabel(match)}`];
+  return emit({ ...session, judges: { ...session.judges, [matchId]: assignment }, journal }, before);
+}
+
+// Судья матча, подтверждённый согласием и обоими игроками.
+export function confirmedJudge(session: DrawSession, matchId: string): UserId | undefined {
+  const assignment = session.judges[matchId];
+  return assignment?.accepted && assignment.confirmedBy.length === 2 ? assignment.candidate : undefined;
+}
+
+export function matchPlayers(session: DrawSession, matchId: string): [UserId, UserId] | undefined {
+  const match = session.bracket && findMatch(session.bracket, matchId);
+  if (!match || match.isBye) return undefined;
+  const players = playersIn(session, match);
+  return players.length === 2 ? (players as [UserId, UserId]) : undefined;
+}
+
+function isInteractive(session: DrawSession, userId: UserId): boolean {
+  return session.config.interactive?.includes(userId) ?? true;
 }
 
 type Result = { session: DrawSession } | { toast: string };
@@ -113,7 +180,7 @@ function handleOrganizer(session: DrawSession, data: string): Result {
       if (match.isBye) continue;
       const people = [...playersIn(session, match), session.judges[match.id]?.accepted ? session.judges[match.id]!.candidate : undefined];
       for (const id of people) {
-        if (!id || !config.interactive.includes(id)) continue;
+        if (!id || !isInteractive(session, id)) continue;
         notifications.push({
           kind: 'message',
           to: id,
@@ -143,7 +210,7 @@ function handlePlayer(session: DrawSession, from: UserId, data: string): Result 
     const candidate = judge[1]!;
     if (!judgeCandidates(session, match).some((p) => p.id === candidate)) return { toast: 'Этот человек не может судить матч' };
     // В симуляторе у фоновых участников нет чата — за них приглашение принимается сразу.
-    const accepted = !session.config.interactive.includes(candidate);
+    const accepted = !isInteractive(session, candidate);
     const assignment: JudgeAssignment = { proposedBy: from, candidate, accepted, confirmedBy: [from] };
     const journal = [...session.journal, `${nameOf(session, from)} зовёт судьёй ${nameOf(session, candidate)} (${matchLabel(match)})`];
     return {
@@ -191,25 +258,27 @@ function handlePlayer(session: DrawSession, from: UserId, data: string): Result 
 
 function playersIn(session: DrawSession, match: BracketMatch): UserId[] {
   return match.slots
-    .map((slot) => resolveSlot(session.bracket!, {}, slot))
+    .map((slot) => resolveSlot(session.bracket!, session.results, slot))
     .filter((id): id is string => id !== undefined);
 }
 
 // Ближайший матч игрока в первом открытом круге.
 export function currentMatch(session: DrawSession, userId: UserId): BracketMatch | undefined {
-  return playedMatches(session.bracket!).find((m) => playersIn(session, m).length === 2 && playersIn(session, m).includes(userId));
+  return playedMatches(session.bracket!).find(
+    (m) => !session.results[m.id] && playersIn(session, m).length === 2 && playersIn(session, m).includes(userId),
+  );
 }
 
 function byeOf(session: DrawSession, userId: UserId): BracketMatch | undefined {
   return session.bracket!.rounds[0]!.find((m) => m.isBye && resolveSlot(session.bracket!, {}, m.slots[0]) === userId);
 }
 
-// Судья — не игрок этого матча и не судит другой матч. Первыми идут гости, затем свободные
+// Судья — не игрок этого матча и не судит другой незавершённый матч. Первыми идут гости, затем свободные
 // в этом круге: им знакомство с песнями меньше всего мешает в собственной игре.
 export function judgeCandidates(session: DrawSession, match: BracketMatch): Participant[] {
   const busy = new Set(
     Object.entries(session.judges)
-      .filter(([id]) => id !== match.id)
+      .filter(([id]) => id !== match.id && !session.results[id])
       .map(([, a]) => a.candidate),
   );
   const inMatch = new Set(playersIn(session, match));
@@ -224,7 +293,8 @@ export function judgeCandidates(session: DrawSession, match: BracketMatch): Part
 // --- Рендер -------------------------------------------------------------------
 
 export function render(session: DrawSession): OutgoingMessage[] {
-  const cards = session.config.interactive.flatMap((id) => renderPlayer(session, id));
+  const people = session.config.interactive ?? session.config.registered.map((p) => p.id);
+  const cards = people.flatMap((id) => renderPlayer(session, id));
   return [...cards, renderOrganizer(session)];
 }
 
@@ -240,12 +310,25 @@ function renderPlayer(session: DrawSession, userId: UserId): OutgoingMessage[] {
 
   const match = currentMatch(session, userId);
   const bye = byeOf(session, userId);
+  const isPlayer = config.players.some((p) => p.id === userId);
   if (match) messages.push(matchCard(session, userId, match));
-  else if (bye) messages.push(byeCard(session, userId, bye));
+  else if (isPlayer && qualifiedIds(session).includes(userId)) {
+    messages.push({ kind: 'message', to: userId, slot: 'card', text: '🏆 Ты в финале! Дату и место сообщит организатор.' });
+  } else if (isPlayer && eliminated(session, userId)) {
+    messages.push({
+      kind: 'message',
+      to: userId,
+      slot: 'card',
+      text: 'Отбор для тебя закончился. Спасибо за игру! Тебя всё ещё могут позвать судить чужие матчи.',
+    });
+  } else if (bye && !session.results[bye.id]) messages.push(byeCard(session, userId, bye));
+  else if (isPlayer && waitingOpponent(session, userId)) {
+    messages.push({ kind: 'message', to: userId, slot: 'card', text: '⏳ Ждём, кто станет твоим следующим соперником. Пару пришлю сюда.' });
+  }
 
   // Приглашения судить чужой матч.
   for (const [matchId, assignment] of Object.entries(session.judges)) {
-    if (assignment.candidate !== userId) continue;
+    if (assignment.candidate !== userId || session.results[matchId]) continue;
     const judged = findMatch(bracket, matchId)!;
     const [a, b] = playersIn(session, judged).map((id) => nameOf(session, id));
     const deadline = formatDate(session.deadlines[judged.round - 1]!);
@@ -255,7 +338,7 @@ function renderPlayer(session: DrawSession, userId: UserId): OutgoingMessage[] {
         to: userId,
         slot: `invite:${matchId}`,
         text: [
-          `⚖️ ${nameOf(session, assignment.proposedBy)} зовёт тебя судить матч ${matchLabel(judged)}: ${a} — ${b}.`,
+          `⚖️ ${assignment.proposedBy ? `${nameOf(session, assignment.proposedBy)} зовёт тебя` : 'Тебя зовут'} судить матч ${matchLabel(judged)}: ${a} — ${b}.`,
           `Срок: до ${deadline}. Договоритесь о времени и месте с игроками.`,
           '',
           'Песни, которые ты услышишь как судья, тебе потом не выпадут в собственных матчах.',
@@ -274,8 +357,10 @@ function renderPlayer(session: DrawSession, userId: UserId): OutgoingMessage[] {
         to: userId,
         slot: `invite:${matchId}`,
         text: ready
-          ? `⚖️ Ты судья матча ${matchLabel(judged)}: ${a} — ${b}, до ${deadline}.\nКогда соберётесь, открой панель судьи — бот выдаст первый трек.`
-          : `⚖️ Согласие отправлено: матч ${matchLabel(judged)}, ${a} — ${b}. Ждём подтверждения второго игрока.`,
+          ? `⚖️ Ты судья матча ${matchLabel(judged)}: ${a} — ${b}, до ${deadline}.\n${
+              session.config.interactive ? 'Когда соберётесь, открой панель судьи — бот выдаст первый трек.' : 'Панель судьи — ниже. Когда соберётесь, нажми «Все на месте».'
+            }`
+          : `⚖️ Согласие отправлено: матч ${matchLabel(judged)}, ${a} — ${b}. Ждём подтверждения игроков.`,
       });
     }
   }
@@ -316,7 +401,8 @@ function matchCard(session: DrawSession, userId: UserId, match: BracketMatch): O
       if (assignment.confirmedBy.includes(userId)) {
         lines.push(`⚖️ Судья: ${judgeName} — согласие есть. Ждём подтверждения соперника.`);
       } else {
-        lines.push(`⚖️ ${nameOf(session, assignment.proposedBy)} предлагает судью: ${judgeName}. Согласие судьи получено.`);
+        const by = assignment.proposedBy ? `${nameOf(session, assignment.proposedBy)} предлагает` : 'Пришёл по ссылке';
+        lines.push(`⚖️ ${by} судью: ${judgeName}. Согласие судьи получено.`);
         buttons.push([{ label: '✅ Подтверждаю судью', data: `confirmJudge:${match.id}` }]);
       }
     } else {
@@ -366,7 +452,9 @@ function renderOrganizer(session: DrawSession): OutgoingMessage {
     for (const match of played) {
       const judge = session.judges[match.id];
       const judgeMark = !judge ? '' : judge.confirmedBy.length === 2 ? ` · ⚖️ ${nameOf(session, judge.candidate)}` : ' · ⚖️ выбирают';
-      lines.push(`  ${matchLabel(match)}: ${describeSlot(session, match.slots[0])} — ${describeSlot(session, match.slots[1])}${judgeMark}`);
+      const winner = session.results[match.id];
+      const result = winner ? ` · 🏅 ${nameOf(session, winner)}` : judgeMark;
+      lines.push(`  ${matchLabel(match)}: ${describeSlot(session, match.slots[0])} — ${describeSlot(session, match.slots[1])}${result}`);
     }
     const byes = round.filter((m) => m.isBye);
     if (byes.length > 0) {
@@ -387,7 +475,28 @@ function describeSlot(session: DrawSession, slot: Slot): string {
   if (slot.kind === 'bye') return '—';
   const source = findMatch(session.bracket!, slot.matchId)!;
   if (source.isBye) return describeSlot(session, source.slots[0]);
-  return `победитель ${matchLabel(source)}`;
+  const winner = session.results[source.id];
+  return winner ? nameOf(session, winner) : `победитель ${matchLabel(source)}`;
+}
+
+export function qualifiedIds(session: DrawSession): UserId[] {
+  return session.bracket ? qualified(session.bracket, session.results) : [];
+}
+
+// Все матчи отбора сыграны: финалисты определены.
+export function qualifiersDone(session: DrawSession): boolean {
+  return session.bracket !== null && playedMatches(session.bracket).every((m) => session.results[m.id]);
+}
+
+function eliminated(session: DrawSession, userId: UserId): boolean {
+  return playedMatches(session.bracket!).some(
+    (m) => session.results[m.id] !== undefined && session.results[m.id] !== userId && playersIn(session, m).includes(userId),
+  );
+}
+
+// Свой матч выигран, следующий соперник ещё не определился.
+function waitingOpponent(session: DrawSession, userId: UserId): boolean {
+  return Object.values(session.results).includes(userId) || byeOf(session, userId) !== undefined;
 }
 
 export function matchLabel(match: BracketMatch): string {

@@ -1,0 +1,66 @@
+# Один экземпляр на токен: два бота с одним токеном и разными базами запускать нельзя.
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tournament
+      POSTGRES_USER: tournament
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U tournament -d tournament']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://tournament:${POSTGRES_PASSWORD}@db:5432/tournament
+      TMP_DIR: /tmp/audio
+    depends_on:
+      db:
+        condition: service_healthy
+    # Лимиты для worker: ffmpeg обрабатывает один файл за раз.
+    mem_limit: 1g
+    cpus: 1.5
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '5'
+
+  # Копия базы раз в BACKUP_MINUTES в ./backups на хосте, хранятся последние 48 (docs/operations.md).
+  backup:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      PGHOST: db
+      PGUSER: tournament
+      PGDATABASE: tournament
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      BACKUP_MINUTES: ${BACKUP_MINUTES:-5}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backups:/backups
+    entrypoint:
+      - sh
+      - -c
+      - |
+        [ "$$BACKUP_MINUTES" -gt 0 ] || exec sleep infinity
+        while true; do
+          pg_dump -Fc -f /backups/.partial \
+            && mv /backups/.partial "/backups/tournament-$$(date -u +%Y%m%d-%H%M%S).dump" \
+            || echo 'pg_dump: копия не сделана'
+          ls -1t /backups/tournament-*.dump 2>/dev/null | tail -n +49 | xargs -r rm -f
+          sleep $$((BACKUP_MINUTES * 60))
+        done
+
+volumes:
+  pgdata:
