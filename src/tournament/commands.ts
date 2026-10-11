@@ -1,7 +1,8 @@
-import { matchLabel } from '../bot/drawSession.ts';
+import { eliminated, formatDate, matchLabel, matchPlayers, qualifiedIds } from '../bot/drawSession.ts';
 import { matchTitle as finalMatchTitle } from '../bot/finalSession.ts';
+import { acceptedCount } from '../bot/intakeSession.ts';
 import type { UserId } from '../bot/protocol.ts';
-import { openMatches, playedMatches, playersOf, qualified } from '../domain/bracket/bracket.ts';
+import { openMatches, playedMatches, playersOf, qualified, resolveSlot } from '../domain/bracket/bracket.ts';
 import type { Sender } from './events.ts';
 import { canAdmin, isOrganizer, matchTitle, message, participant, say, scoreLine } from './helpers.ts';
 import { technicalResult } from './organizer.ts';
@@ -105,11 +106,135 @@ function finalMatchesText(state: TournamentState): string {
   return lines.join('\n');
 }
 
+// /status — где человек сейчас: его матч, кого он судит; организатору — ещё сводка.
 function statusText(state: TournamentState, id: UserId): string {
   const person = state.people[id];
   const phase: Record<Phase, string> = { intake: 'сбор песен', qualifiers: 'отбор', final: 'финал', archive: 'турнир завершён' };
   const lines = [`Турнир «${state.config.title}» · этап: ${phase[state.phase]}`];
-  lines.push(person ? `Ты: №${person.number}, ${person.name}` : 'Ты не зарегистрирован.');
-  if (canAdmin(state, id)) lines.push(`Участников: ${Object.keys(state.people).length}`);
+  if (person) lines.push(`Ты: №${person.number}, ${person.name}`, ...personalStatus(state, id));
+  else lines.push(isOrganizer(state, id) ? 'Ты организатор турнира.' : 'Ты не зарегистрирован.');
+  if (canAdmin(state, id)) lines.push('', ...organizerSummary(state));
+  lines.push('', commandsHint(state, id));
   return lines.join('\n');
+}
+
+function personalStatus(state: TournamentState, id: UserId): string[] {
+  switch (state.phase) {
+    case 'intake': {
+      const playing = state.intake.config.participants.some((p) => p.id === id);
+      const max = state.config.intakeRules.maxSubmissions;
+      return playing ? [`🎵 Песен принято: ${acceptedCount(state.intake, id)} из ${max}`] : [];
+    }
+    case 'qualifiers':
+      return qualifierStatus(state, id);
+    case 'final':
+      return finalStatus(state, id);
+    case 'archive': {
+      const champion = state.final && qualified(state.final.bracket, state.final.results)[0];
+      return champion ? [`🏁 Победитель — ${participant(state, champion).name}`] : [];
+    }
+  }
+}
+
+function qualifierStatus(state: TournamentState, id: UserId): string[] {
+  const draw = state.draw!;
+  if (!draw.bracket) return ['🎲 Жеребьёвка ещё не проведена.'];
+  const lines: string[] = [];
+  if (state.withdrawn.includes(id)) lines.push('🚪 Ты снят с турнира.');
+  else if (draw.config.players.some((p) => p.id === id)) lines.push(ownMatchLine(state, id));
+
+  for (const match of playedMatches(draw.bracket)) {
+    const assignment = draw.judges[match.id];
+    if (assignment?.candidate !== id || draw.results[match.id]) continue;
+    const runtime = state.matches[match.id];
+    const title = matchTitle(state, match.id);
+    if (runtime && !runtime.closed) lines.push(`⚖️ Судишь ${title}: ${matchProgress(state, match.id, true)}`);
+    else if (!assignment.accepted) lines.push(`⚖️ Тебя зовут судить ${title} — ответь в приглашении.`);
+    else lines.push(`⚖️ Судишь ${title}: ждём, пока пара подтвердит судью.`);
+  }
+  return lines;
+}
+
+// Матч игрока отбора: текущая пара, ожидание соперника или итог.
+function ownMatchLine(state: TournamentState, id: UserId): string {
+  const draw = state.draw!;
+  const bracket = draw.bracket!;
+  const name = (userId: UserId) => participant(state, userId).name;
+  const deadline = (round: number) => formatDate(draw.deadlines[round - 1]!);
+
+  const current = openMatches(bracket, draw.results).find((m) => matchPlayers(draw, m.id)!.includes(id));
+  if (current) {
+    const opponent = matchPlayers(draw, current.id)!.find((p) => p !== id)!;
+    return `🎤 Твой матч ${matchLabel(current)}, соперник — ${name(opponent)}, до ${deadline(current.round)}: ${matchProgress(state, current.id)}`;
+  }
+  if (eliminated(draw, id)) {
+    const lost = playedMatches(bracket).find((m) => draw.results[m.id] && draw.results[m.id] !== id && matchPlayers(draw, m.id)?.includes(id))!;
+    return `Отбор для тебя закончен: в ${matchLabel(lost)} дальше проходит ${name(draw.results[lost.id]!)}.`;
+  }
+  if (qualifiedIds(draw).includes(id)) return '🏆 Ты в финале! Организатор сообщит дату и место.';
+  const next = playedMatches(bracket).find(
+    (m) => !draw.results[m.id] && m.slots.some((slot) => resolveSlot(bracket, draw.results, slot) === id),
+  );
+  if (!next) return '⏳ Ждёшь следующего круга.';
+  const feeder = next.slots.find((slot) => slot.kind === 'winnerOf' && resolveSlot(bracket, draw.results, slot) === undefined);
+  const from = feeder?.kind === 'winnerOf' ? ` — соперник определится в ${matchTitle(state, feeder.matchId)}` : '';
+  return `⏳ Твой следующий матч ${matchLabel(next)}${from}, до ${deadline(next.round)}.`;
+}
+
+// Шаг, на котором матч: выбор судьи, ожидание, игра, подтверждение, спор. Судье своё имя не называем.
+function matchProgress(state: TournamentState, matchId: string, forJudge = false): string {
+  const runtime = state.matches[matchId];
+  const assignment = state.draw!.judges[matchId];
+  if (runtime && !runtime.closed) {
+    const { session } = runtime;
+    const judge = forJudge ? '' : `, судья ${session.config.judge.name}`;
+    if (runtime.dispute) return 'спор — решает организатор';
+    if (session.match.phase.kind === 'lobby') return `ждём «Все на месте»${judge}`;
+    if (session.match.phase.kind === 'decided') return `сыгран, ${scoreLine(session)} — ждём подтверждения результата`;
+    return `идёт, ${scoreLine(session)}${judge}`;
+  }
+  if (!assignment) return 'нужно выбрать судью — кнопка в карточке пары';
+  const judge = participant(state, assignment.candidate).name;
+  return assignment.accepted ? `судья ${judge} согласен — ждём подтверждения пары` : `ждём ответа судьи ${judge}`;
+}
+
+function finalStatus(state: TournamentState, id: UserId): string[] {
+  const lines: string[] = [];
+  if (state.finalJudge?.id === id) lines.push('⚖️ Ты судья финала.');
+  if (!finalistIds(state).includes(id)) return lines;
+  const final = state.final;
+  if (!final) return [...lines, '🏆 Ты в финале! Организатор сообщит дату и место.'];
+  const mine = playedMatches(final.bracket).filter((m) => playersOf(final.bracket, final.results, m.id)?.includes(id));
+  const open = mine.find((m) => !final.results[m.id]);
+  if (open) {
+    const onStage = final.current?.matchId === open.id ? ` — на сцене, ${scoreLine(final.current.session)}` : ' — ждёт выхода на сцену';
+    lines.push(`🏆 ${finalMatchTitle(final, open.id)}${onStage}`);
+  } else if (qualified(final.bracket, final.results)[0] === id) lines.push('🏆 Ты победитель турнира!');
+  else if (mine.length > 0) lines.push('Финал для тебя закончен. Спасибо за игру!');
+  else lines.push('🏆 Ты в финале — соперник ещё определяется.');
+  return lines;
+}
+
+// Сводка для организатора и админов: где стоит турнир и что требует внимания.
+function organizerSummary(state: TournamentState): string[] {
+  const lines = [`👥 Участников: ${Object.keys(state.people).length}`];
+  const draw = state.draw;
+  if (state.phase !== 'qualifiers' || !draw?.bracket) return lines;
+  const all = playedMatches(draw.bracket);
+  const live = Object.values(state.matches).filter((m) => !m.closed);
+  const noJudge = openMatches(draw.bracket, draw.results).filter((m) => !draw.judges[m.id]).length;
+  const disputes = live.filter((m) => m.dispute).length;
+  const done = all.filter((m) => draw.results[m.id]).length;
+  lines.push(
+    `🎤 Матчи: сыграно ${done} из ${all.length} · идут ${live.length} · без судьи ${noJudge}` +
+      (disputes > 0 ? ` · ⚠️ споры: ${disputes}` : ''),
+  );
+  return lines;
+}
+
+function commandsHint(state: TournamentState, id: UserId): string {
+  const hint = 'Команды: /matches — кто с кем играет, /help — что я умею.';
+  if (isOrganizer(state, id)) return `${hint}\nОрганизатору: /panel — панели заново, /tech, /broadcast — подробнее в /help.`;
+  if (canAdmin(state, id)) return `${hint}\nАдмину: /tech, /broadcast — подробнее в /help.`;
+  return hint;
 }

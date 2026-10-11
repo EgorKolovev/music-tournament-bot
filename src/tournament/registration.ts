@@ -9,6 +9,8 @@ import type { PendingRegistration, Person, Step, TournamentState } from './state
 
 // Регистрация по ссылкам: участник t_<код>, судья матча judge_<матч>, судья финала fjudge_<код>.
 
+const COMMANDS_HINT = 'Команды: /status — где ты сейчас, /matches — кто с кем играет, /help — что я умею.';
+
 export function handleStart(state: TournamentState, from: Sender, payload: string, at: number): Step {
   const registered = state.people[from.id];
   const invite = payload === `t_${state.config.code}`;
@@ -23,7 +25,7 @@ export function handleStart(state: TournamentState, from: Sender, payload: strin
   if (judgeLink) return judgeInvite(state, from.id, judgeLink[1]!);
   if (finalJudgeLink) return assignFinalJudge(state, from.id, at);
   const panels = isOrganizer(state, from.id) ? resendPanels(state).out : [];
-  return { state, out: [message(from.id, `Ты в турнире: №${registered.number}, ${registered.name}.\n/help — что я умею.`), ...panels] };
+  return { state, out: [message(from.id, `Ты в турнире: №${registered.number}, ${registered.name}.\n${COMMANDS_HINT}`), ...panels] };
 }
 
 function startRegistration(state: TournamentState, from: Sender, payload?: string): Step {
@@ -118,7 +120,7 @@ function register(state: TournamentState, from: Sender, pending: PendingRegistra
       kind: 'message',
       to: person.id,
       slot: 'r:reg',
-      text: `✅ Ты в турнире «${state.config.title}»: №${person.number}, ${person.name}.`,
+      text: `✅ Ты в турнире «${state.config.title}»: №${person.number}, ${person.name}.\n${COMMANDS_HINT}`,
     },
   ];
 

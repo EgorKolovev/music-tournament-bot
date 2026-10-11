@@ -458,6 +458,54 @@ describe('Инструменты организатора', () => {
   });
 });
 
+describe('/status', () => {
+  function status(bot: TestBot, id: UserId): string {
+    bot.command(id, '/status');
+    return bot.lastText(id);
+  }
+
+  it('на сборе: сколько песен принято; после регистрации — подсказка команд', () => {
+    const bot = new TestBot();
+    bot.register('1');
+    expect(bot.allText('1')).toContain('Команды: /status — где ты сейчас, /matches');
+    bot.submitSongs('1', 3);
+    bot.processAudio();
+    expect(status(bot, '1')).toContain('🎵 Песен принято: 3 из 10');
+    expect(status(bot, '1')).toContain('Команды: /matches — кто с кем играет, /help');
+  });
+
+  it('на отборе: свой матч по шагам, судейство, ожидание соперника и итог', () => {
+    const bot = readyForQualifiers();
+    const draw = bot.state.draw!;
+    const first = draw.bracket!.rounds[0]!.find((m) => !m.isBye)!;
+    const second = draw.bracket!.rounds[1]!.find((m) => m.slots.some((slot) => slot.kind === 'winnerOf' && slot.matchId === first.id))!;
+    const waiting = second.slots.map((slot) => resolveSlot(draw.bracket!, draw.results, slot)).find(Boolean)!;
+    const [a, b] = matchPlayers(draw, first.id)!;
+    const name = (id: UserId) => bot.state.people[id]!.name;
+
+    expect(status(bot, a)).toMatch(new RegExp(`🎤 Твой матч №1\\.\\d, соперник — ${name(b)}, до \\d+ \\S+: нужно выбрать судью`));
+    expect(status(bot, waiting)).toContain(`⏳ Твой следующий матч №2.`);
+    expect(status(bot, waiting)).toContain(`соперник определится в №1.`);
+
+    const judge = appointJudge(bot, first.id);
+    expect(status(bot, a)).toContain(`ждём «Все на месте», судья ${name(judge)}`);
+    expect(status(bot, judge)).toMatch(/⚖️ Судишь №1\.\d: .+: ждём «Все на месте»$/m);
+    expect(status(bot, ORGANIZER)).toContain('Ты организатор турнира.');
+    playToDecision(bot, `m:${first.id}:`, judge, [a, b], 1);
+    expect(status(bot, b)).toMatch(/идёт, .+ 2,1 : 0,0 .+, судья /);
+    expect(status(bot, ORGANIZER)).toMatch(/🎤 Матчи: сыграно 0 из 3 · идут 1 · без судьи \d/);
+    expect(status(bot, ORGANIZER)).toContain('Организатору: /panel');
+
+    bot.press(ORGANIZER, 'o:menu:tech');
+    bot.press(ORGANIZER, `o:techMatch:${first.id}`);
+    bot.press(ORGANIZER, `o:techWin:${first.id}:${a}`);
+    bot.press(ORGANIZER, 'o:techOk');
+    expect(status(bot, b)).toContain(`Отбор для тебя закончен: в ${'№'}1.`);
+    expect(status(bot, b)).toContain(`дальше проходит ${name(a)}`);
+    expect(status(bot, a)).toContain(`🎤 Твой матч №2.`);
+  });
+});
+
 describe('/matches', () => {
   it('сбор, ожидание пар, живой матч со счётом и судьёй, сыгранные', () => {
     const bot = new TestBot();
