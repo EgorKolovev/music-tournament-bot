@@ -72,6 +72,8 @@ async function main(): Promise<void> {
             downloadFile: createTelegramDownloader(settings.token),
             serviceChatId: settings.serviceChatId!,
             tmpDir: settings.tmpDir,
+            // Длина фрагмента — параметр турнира, зафиксированный в базе при первом запуске.
+            fragmentSec: config.fragmentSec,
             ffmpegPath: settings.ffmpegPath,
             ffprobePath: settings.ffprobePath,
             log,

@@ -61,11 +61,13 @@ const SCHEMA = `
     submission_id TEXT PRIMARY KEY,
     file_id TEXT NOT NULL,
     size_bytes BIGINT,
+    start_sec INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0,
     not_before BIGINT NOT NULL DEFAULT 0,
     result TEXT
   );
+  ALTER TABLE jobs ADD COLUMN IF NOT EXISTS start_sec INTEGER NOT NULL DEFAULT 0;
 `;
 
 export class Store implements SlotStore, JobSource {
@@ -193,12 +195,17 @@ export class Store implements SlotStore, JobSource {
 
   // --- Очередь аудио ---------------------------------------------------------------
 
+  // Автор сдвинул начало — задача той же заявки возвращается в очередь с новым началом.
+  // Если старая в этот момент режется, её результат уже ничего не закроет (complete по start_sec).
   async enqueueJobs(jobs: AudioJob[]): Promise<number> {
     let added = 0;
     for (const job of jobs) {
       const { rowCount } = await this.db.query(
-        'INSERT INTO jobs (submission_id, file_id, size_bytes) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
-        [job.submissionId, job.fileId, job.sizeBytes ?? null],
+        `INSERT INTO jobs (submission_id, file_id, size_bytes, start_sec) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (submission_id) DO UPDATE
+           SET start_sec = EXCLUDED.start_sec, status = 'pending', attempts = 0, not_before = 0, result = NULL
+           WHERE jobs.start_sec <> EXCLUDED.start_sec`,
+        [job.submissionId, job.fileId, job.sizeBytes ?? null, job.startSec],
       );
       added += rowCount;
     }
@@ -206,24 +213,32 @@ export class Store implements SlotStore, JobSource {
   }
 
   async claim(): Promise<AudioJob | undefined> {
-    const { rows } = await this.db.query<{ submission_id: string; file_id: string; size_bytes: number | null }>(
+    const { rows } = await this.db.query<{ submission_id: string; file_id: string; size_bytes: number | null; start_sec: number }>(
       `UPDATE jobs SET status = 'running'
        WHERE submission_id = (
          SELECT submission_id FROM jobs
          WHERE status = 'pending' AND not_before <= $1 AND attempts < $2
          ORDER BY seq LIMIT 1 FOR UPDATE SKIP LOCKED
        )
-       RETURNING submission_id, file_id, size_bytes::float8 AS size_bytes`,
+       RETURNING submission_id, file_id, size_bytes::float8 AS size_bytes, start_sec`,
       [Date.now(), JOB_ATTEMPTS],
     );
     const row = rows[0];
-    return row && { submissionId: row.submission_id, fileId: row.file_id, sizeBytes: row.size_bytes ?? undefined };
+    return (
+      row && {
+        submissionId: row.submission_id,
+        fileId: row.file_id,
+        sizeBytes: row.size_bytes ?? undefined,
+        startSec: row.start_sec,
+      }
+    );
   }
 
   async complete(result: AudioResult): Promise<void> {
-    await this.db.query(`UPDATE jobs SET status = 'done', result = $2 WHERE submission_id = $1`, [
+    await this.db.query(`UPDATE jobs SET status = 'done', result = $2 WHERE submission_id = $1 AND start_sec = $3`, [
       result.submissionId,
       JSON.stringify(result),
+      result.startSec,
     ]);
   }
 
@@ -233,18 +248,18 @@ export class Store implements SlotStore, JobSource {
     await this.db.query(
       `UPDATE jobs SET status = 'pending', attempts = attempts + 1,
          not_before = $2 + LEAST(60000 * power(2, attempts), 1800000)::bigint, result = $3
-       WHERE submission_id = $1`,
-      [job.submissionId, Date.now(), String(error instanceof Error ? error.message : error)],
+       WHERE submission_id = $1 AND start_sec = $4`,
+      [job.submissionId, Date.now(), String(error instanceof Error ? error.message : error), job.startSec],
     );
   }
 
   // Задачи, исчерпавшие попытки, — превращаются в окончательную неудачу файла.
   async exhaustedJobs(): Promise<AudioJob[]> {
-    const { rows } = await this.db.query<{ submission_id: string; file_id: string }>(
-      `SELECT submission_id, file_id FROM jobs WHERE status = 'pending' AND attempts >= $1 ORDER BY seq`,
+    const { rows } = await this.db.query<{ submission_id: string; file_id: string; start_sec: number }>(
+      `SELECT submission_id, file_id, start_sec FROM jobs WHERE status = 'pending' AND attempts >= $1 ORDER BY seq`,
       [JOB_ATTEMPTS],
     );
-    return rows.map((r) => ({ submissionId: r.submission_id, fileId: r.file_id }));
+    return rows.map((r) => ({ submissionId: r.submission_id, fileId: r.file_id, startSec: r.start_sec }));
   }
 }
 

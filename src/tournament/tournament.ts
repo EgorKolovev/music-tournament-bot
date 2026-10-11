@@ -33,6 +33,7 @@ import type { Button, Incoming, Outgoing, OutgoingMessage, UserId } from '../bot
 import { buildQualifierBracket, findMatch, playedMatches, qualified } from '../domain/bracket/bracket.ts';
 import { formatPoints, type Ruleset } from '../domain/match/ruleset.ts';
 import { acceptedSongs, type IntakeRules } from '../domain/submission/intake.ts';
+import { hashText } from '../shared/random.ts';
 import type { Sender, StampedEvent, TournamentEvent } from './events.ts';
 
 // Оркестратор турнира (docs/telegram-integration.md, разделы 2, 4, 6): одно состояние на весь
@@ -60,6 +61,8 @@ export interface TournamentConfig {
   // Срок круга отбора в днях от жеребьёвки.
   roundDays: number;
   intakeRules: IntakeRules;
+  // Длина игрового фрагмента, секунд; одна на турнир.
+  fragmentSec: number;
   finalPoolTarget: number;
   qualifierRuleset: Ruleset;
   finalRuleset: Ruleset;
@@ -105,8 +108,6 @@ export interface TournamentState {
   nextNumber: number;
   registration: Record<UserId, PendingRegistration>;
   intake: IntakeSession;
-  // submissionId → file_id обезличенной игровой версии.
-  gameAudio: Record<string, string>;
   draw: DrawSession | null;
   matches: Record<string, MatchRuntime>;
   // Кто с какой песней познакомился в матчах: судья — при выдаче, игроки — при старте трека.
@@ -134,6 +135,7 @@ export function createTournament(config: TournamentConfig): Step {
     background: [],
     organizer: { id: ORG, name: 'Организатор' },
     rules: config.intakeRules,
+    fragmentSec: config.fragmentSec,
     finalPoolTarget: config.finalPoolTarget,
     finalists: config.finalists,
     seed: config.seed,
@@ -145,7 +147,6 @@ export function createTournament(config: TournamentConfig): Step {
     nextNumber: 1,
     registration: {},
     intake: opened.session,
-    gameAudio: {},
     draw: null,
     matches: {},
     known: {},
@@ -177,11 +178,8 @@ function dispatch(state: TournamentState, event: TournamentEvent, at: number): S
         return intakeStep(state, { kind: 'files', from: event.from.id, files: event.files });
       }
       return say(state, event.from.id, 'Сейчас песни не принимаются.');
-    case 'worker': {
-      const gameAudio = { ...state.gameAudio };
-      for (const r of event.results) if (r.ok && r.gameFileId) gameAudio[r.submissionId] = r.gameFileId;
-      return intakeStep({ ...state, gameAudio }, { kind: 'worker', results: event.results });
-    }
+    case 'worker':
+      return intakeStep(state, { kind: 'worker', results: event.results });
     case 'button':
       return handleButton(state, event.from, event.data, at);
     case 'tick':
@@ -510,13 +508,25 @@ export function finalistIds(state: TournamentState): UserId[] {
 }
 
 // Песни пула для матча: id — музыкальная идентичность, авторы — все, кто её присылал.
+// Звучит заявка, у которой есть игровая версия; без нарезки — первая, судья включает её сам с её начала.
 function libraryOf(state: TournamentState, keys: readonly string[]): LibrarySong[] {
+  const { submissions } = state.intake.intake;
   const songs = new Map(acceptedSongs(state.intake.intake).map((s) => [s.key, s]));
   return keys.flatMap((key) => {
     const song = songs.get(key);
     if (!song) return [];
-    const audioFileId = song.submissionIds.map((id) => state.gameAudio[id]).find(Boolean);
-    return [{ id: key, artist: song.meta.artist, title: song.meta.title, ownerIds: song.knownBy, audioFileId }];
+    const own = song.submissionIds.map((id) => submissions.find((s) => s.id === id)!);
+    const source = own.find((s) => s.gameFileId) ?? own[0]!;
+    return [
+      {
+        id: key,
+        artist: song.meta.artist,
+        title: song.meta.title,
+        ownerIds: song.knownBy,
+        audioFileId: source.gameFileId,
+        startSec: source.startSec,
+      },
+    ];
   });
 }
 
@@ -556,7 +566,7 @@ function openMatch(
     judge: participant(state, judge),
     library: libraryOf(state, state.intake.closed!.split.main),
     ruleset: state.config.qualifierRuleset,
-    seed: state.config.seed + hash(matchId) * 31 + attempt,
+    seed: state.config.seed + hashText(matchId) * 31 + attempt,
     knownByPlayers: knownBy(state, players),
   });
   const runtime: MatchRuntime = { session: opened.session, attempt, trackReminded: false, confirmEscalated: false, closed: false };
@@ -976,10 +986,4 @@ function statusText(state: TournamentState, id: UserId): string {
 
 function isoDate(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
-}
-
-function hash(text: string): number {
-  let h = 0;
-  for (const char of text) h = (h * 31 + char.charCodeAt(0)) % 1_000_003;
-  return h;
 }

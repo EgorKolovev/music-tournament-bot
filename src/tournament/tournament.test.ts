@@ -116,7 +116,131 @@ describe('Турнир целиком', () => {
     const players = matchPlayers(bot.state.draw!, matchId)!;
     playToDecision(bot, `m:${matchId}:`, judge, players, 1);
     const audio = bot.outLog.find((o) => o.kind === 'message' && o.to === judge && o.audio);
-    expect(audio).toMatchObject({ audio: { fileId: expect.stringMatching(/^G-s\d+$/), title: 'Трек 1' } });
+    expect(audio).toMatchObject({ audio: { fileId: expect.stringMatching(/^G-s\d+@0$/), title: 'Трек 1' } });
+  });
+});
+
+describe('Начало фрагмента', () => {
+  const ID = '1';
+
+  function withSongs(): TestBot {
+    const bot = new TestBot();
+    bot.register(ID);
+    bot.submitSongs(ID, 3);
+    bot.processAudio();
+    return bot;
+  }
+
+  function song(bot: TestBot, index = 0) {
+    return bot.state.intake.intake.submissions.filter((s) => s.owner === ID)[index]!;
+  }
+
+  function preview(bot: TestBot) {
+    return bot.chats[ID]!.messages.find((m) => m.author === 'bot' && m.slot === 'i:preview');
+  }
+
+  function list(bot: TestBot): string {
+    return bot.chats[ID]!.messages.find((m) => m.author === 'bot' && m.slot === 'i:list')?.text ?? '';
+  }
+
+  it('автор пишет время — песня перенарезается и приходит послушать', () => {
+    const bot = withSongs();
+    const { id } = song(bot);
+    bot.press(ID, 'i:pick:start');
+    bot.press(ID, `i:n:${id}`);
+    bot.text(ID, '1:15');
+
+    expect(song(bot)).toMatchObject({ startSec: 75, processing: 'pending' });
+    expect(list(bot)).toContain('· с 1:15');
+    expect(preview(bot)?.text).toContain('⏳');
+
+    // Нарезка с прежним началом устарела и не засчитывается.
+    bot.send({ kind: 'worker', results: [{ submissionId: id, ok: true, startSec: 0, gameFileId: 'OLD' }] });
+    expect(song(bot).processing).toBe('pending');
+
+    bot.processAudio();
+    expect(preview(bot)).toMatchObject({ audio: { fileId: `G-${id}@75`, title: 'Трек' } });
+    expect(preview(bot)?.text).toContain('Начало 1:15');
+    expect(preview(bot)?.text).toContain('Так её услышит судья');
+  });
+
+  it('фрагмент целиком умещается в песню: позднее начало и непонятный текст не принимаются', () => {
+    const bot = withSongs();
+    const { id } = song(bot);
+    bot.press(ID, 'i:pick:start');
+    bot.press(ID, `i:n:${id}`);
+    bot.text(ID, 'с припева');
+    expect(list(bot)).toContain('Не разобрал');
+    // Песня 3:00, фрагмент 60 с.
+    bot.text(ID, '2:30');
+    expect(list(bot)).toContain('начало не позже 2:00');
+    expect(song(bot).startSec).toBe(0);
+
+    bot.text(ID, '1:55');
+    bot.press(ID, `i:shift:${id}:10`);
+    expect(song(bot).startSec).toBe(120);
+    bot.press(ID, `i:shift:${id}:5`);
+    expect(bot.toasts.at(-1)?.text).toBe('Дальше сдвигать некуда');
+  });
+
+  it('послушать и сдвинуть кнопками, не выходя за пределы песни', () => {
+    const bot = withSongs();
+    const { id } = song(bot, 1);
+    bot.press(ID, 'i:pick:listen');
+    bot.press(ID, `i:n:${id}`);
+    expect(preview(bot)).toMatchObject({ audio: { fileId: `G-${id}@0` } });
+
+    bot.press(ID, `i:shift:${id}:-5`);
+    expect(bot.toasts.at(-1)?.text).toBe('Дальше сдвигать некуда');
+    bot.press(ID, `i:shift:${id}:10`);
+    bot.press(ID, `i:shift:${id}:5`);
+    expect(song(bot, 1).startSec).toBe(15);
+    bot.processAudio();
+    expect(preview(bot)).toMatchObject({ audio: { fileId: `G-${id}@15` } });
+  });
+
+  it('случайное начало: фрагмент целиком в песне, повтор событий даёт то же место', () => {
+    const play = () => {
+      const bot = withSongs();
+      const { id } = song(bot);
+      bot.press(ID, 'i:pick:start');
+      bot.press(ID, `i:n:${id}`);
+      bot.press(ID, `i:random:${id}`);
+      const first = song(bot).startSec;
+      bot.processAudio();
+      bot.press(ID, `i:random:${id}`);
+      return [first, song(bot).startSec];
+    };
+    const [first, second] = play();
+    // Песня 180 с, фрагмент 60 с, без последних 20 с: начало не позже 1:40.
+    for (const start of [first!, second!]) {
+      expect(start).toBeGreaterThan(0);
+      expect(start).toBeLessThanOrEqual(100);
+    }
+    expect(second).not.toBe(first);
+    expect(play()).toEqual([first, second]);
+  });
+
+  it('без нарезки судья видит, с какого места включить песню', () => {
+    const bot = new TestBot();
+    for (const id of PLAYERS) bot.register(id);
+    for (const id of PLAYERS) bot.submitSongs(id, 10);
+    for (const s of bot.state.intake.intake.submissions) {
+      bot.press(s.owner, 'i:pick:start');
+      bot.press(s.owner, `i:n:${s.id}`);
+      bot.text(s.owner, '0:30');
+    }
+    bot.processAudio({ cut: false });
+    bot.press(ORGANIZER, 'o:closeIntake');
+    bot.press(ORGANIZER, 'o:toDraw');
+    bot.press(ORGANIZER, 'o:draw');
+
+    const matchId = nextMatch(bot)!;
+    const judge = appointJudge(bot, matchId);
+    playToDecision(bot, `m:${matchId}:`, judge, matchPlayers(bot.state.draw!, matchId)!, 1);
+    const audio = bot.outLog.find((o) => o.kind === 'message' && o.to === judge && o.audio);
+    expect(audio).toMatchObject({ text: 'Включите с 0:30', audio: { title: 'Трек 1', fileId: undefined } });
+    expect(violations(bot.outLog)).toEqual([]);
   });
 });
 

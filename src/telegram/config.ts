@@ -41,6 +41,8 @@ export function readSettings(env: Record<string, string | undefined>): BotSettin
   const finalists = int(env.FINALISTS, 8);
   if (finalists < 2 || (finalists & (finalists - 1)) !== 0) throw new ConfigError('FINALISTS — степень двойки: 2, 4, 8.');
   const tracks = int(env.QUALIFIER_TRACKS, 5);
+  const fragmentSec = int(env.FRAGMENT_SECONDS, 60);
+  if (fragmentSec < 5 || fragmentSec > 600) throw new ConfigError('FRAGMENT_SECONDS — от 5 до 600 секунд.');
 
   return {
     token,
@@ -64,6 +66,7 @@ export function readSettings(env: Record<string, string | undefined>): BotSettin
       seed: int(env.SEED, Math.floor(Math.random() * 1_000_000)),
       roundDays: int(env.ROUND_DAYS, 7),
       intakeRules: { ...DEFAULT_INTAKE_RULES, maxSubmissions: int(env.MAX_SUBMISSIONS, DEFAULT_INTAKE_RULES.maxSubmissions) },
+      fragmentSec,
       finalPoolTarget: int(env.FINAL_POOL_TARGET, finalPoolSize(DEFAULT_FINAL_TARGET)),
       qualifierRuleset: { ...QUALIFIER_RULESET, format: { kind: 'fixed', tracks } },
       finalRuleset: FINAL_RULESET,

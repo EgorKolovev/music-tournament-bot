@@ -11,6 +11,13 @@ export function seededRandom(seed: number): () => number {
   };
 }
 
+// Число из строки, чтобы подмешать её в seed: id матча, заявки.
+export function hashText(text: string): number {
+  let h = 0;
+  for (const char of text) h = (h * 31 + char.charCodeAt(0)) % 1_000_003;
+  return h;
+}
+
 // Перемешивание Фишера — Йейтса на переданном генераторе.
 export function shuffled<T>(items: readonly T[], random: () => number): T[] {
   const result = [...items];

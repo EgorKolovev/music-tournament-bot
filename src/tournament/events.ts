@@ -1,4 +1,4 @@
-import type { UserId } from '../bot/protocol.ts';
+import type { UserId, WorkerResult } from '../bot/protocol.ts';
 import type { AudioFile } from '../domain/submission/intake.ts';
 
 // События турнира. Каждое приходит с временем `at` (мс) от транспорта — повтор журнала
@@ -15,7 +15,7 @@ export type TournamentEvent =
   | { kind: 'text'; from: Sender; text: string }
   | { kind: 'command'; from: Sender; command: string; payload: string }
   | { kind: 'files'; from: Sender; files: AudioFile[] }
-  | { kind: 'worker'; results: { submissionId: string; ok: boolean; gameFileId?: string }[] }
+  | { kind: 'worker'; results: WorkerResult[] }
   // Периодическая проверка напоминаний и сроков.
   | { kind: 'tick' };
 

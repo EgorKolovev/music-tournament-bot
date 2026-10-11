@@ -5,6 +5,7 @@ import {
   pendingProcessing,
   receiveFiles,
   remove,
+  setStart,
   setTitle,
   statusOf,
   submissionsOf,
@@ -16,7 +17,8 @@ import {
 } from '../domain/submission/intake.ts';
 import { splitPools, type PoolSplit } from '../domain/submission/pools.ts';
 import { fromText } from '../domain/submission/titles.ts';
-import { plural } from '../shared/text.ts';
+import { hashText, seededRandom } from '../shared/random.ts';
+import { formatClock, parseClock, plural } from '../shared/text.ts';
 import type { Participant } from './matchSession.ts';
 import type { Button, Incoming, Outgoing, OutgoingMessage, UserId } from './protocol.ts';
 
@@ -30,12 +32,20 @@ export interface IntakeSessionConfig {
   background: { participant: Participant; files: AudioFile[] }[];
   organizer: Participant;
   rules: IntakeRules;
+  // Длина игрового фрагмента, секунд.
+  fragmentSec: number;
   finalPoolTarget: number;
   finalists: number;
   seed: number;
 }
 
-type Mode = { kind: 'idle' } | { kind: 'pick'; action: 'edit' | 'remove' } | { kind: 'awaitTitle'; submissionId: string };
+type PickAction = 'edit' | 'remove' | 'start' | 'listen';
+
+type Mode =
+  | { kind: 'idle' }
+  | { kind: 'pick'; action: PickAction }
+  | { kind: 'awaitTitle'; submissionId: string }
+  | { kind: 'awaitStart'; submissionId: string };
 
 interface UserUi {
   mode: Mode;
@@ -44,6 +54,12 @@ interface UserUi {
   // Счётчики позиции: если пользователь писал после списка, список переезжает вниз.
   activity: number;
   listPostedAt: number;
+  // Песня, чей фрагмент показан отдельным сообщением под списком.
+  preview: string | null;
+  // То же для сообщения с фрагментом; −1 — перенести его вниз при следующей отправке.
+  previewPostedAt: number;
+  // Сколько раз участник выбирал случайное начало: вместе с seed даёт воспроизводимый бросок.
+  rolls: number;
 }
 
 export type AdmissionDecision = 'admit' | 'exclude';
@@ -78,10 +94,20 @@ const REJECT_TEXT: Record<RejectReason, string> = {
 const MIN_SONGS_PER_QUALIFIER = 10;
 
 const TITLE_FORMAT = 'Ответь сообщением в формате «Исполнитель — Название».';
+const START_FORMAT = 'Напиши время, например 1:15; 0 — с начала. Или 🎲 — случайное место.';
+
+// Сдвиги начала кнопками под фрагментом, секунд.
+const SHIFTS = [-10, -5, 5, 10];
+// Случайное начало не заходит в концовку песни: там затухание или тишина.
+const OUTRO_SEC = 20;
+
+function newUi(): UserUi {
+  return { mode: { kind: 'idle' }, notice: null, activity: 0, listPostedAt: 0, preview: null, previewPostedAt: 0, rolls: 0 };
+}
 
 export function openIntakeSession(config: IntakeSessionConfig): IntakeStep {
   const ui: Record<UserId, UserUi> = {};
-  for (const p of config.participants) ui[p.id] = { mode: { kind: 'idle' }, notice: null, activity: 0, listPostedAt: 0 };
+  for (const p of config.participants) ui[p.id] = newUi();
 
   let intake = createIntake(config.rules);
   for (const { participant, files } of config.background) intake = receiveFiles(intake, participant.id, files);
@@ -102,6 +128,7 @@ function welcomeMessage(session: IntakeSession, p: Participant): OutgoingMessage
       '',
       `Пришли до ${session.config.rules.maxSubmissions} песен — пересылай пачкой, хоть все сразу, из @Music_to_you_bot или откуда удобно.`,
       'Исполнителя и название возьму из файла; если не получится — спрошу.',
+      `Судья услышит фрагмент до ${session.config.fragmentSec} секунд — с начала песни или с места, которое выберешь сам.`,
       'На отбор и финал песни разделю сам после закрытия сбора.',
     ].join('\n'),
   };
@@ -113,7 +140,9 @@ export function handleIntake(session: IntakeSession, input: Incoming): IntakeSte
 
   if (input.kind === 'worker') {
     let intake = session.intake;
-    for (const { submissionId, ok } of input.results) intake = completeProcessing(intake, submissionId, ok);
+    for (const r of input.results) {
+      intake = completeProcessing(intake, r.submissionId, r.ok, { startSec: r.startSec, gameFileId: r.gameFileId });
+    }
     next = { ...session, intake };
   } else if (input.from === session.config.organizer.id) {
     if (input.kind !== 'button') return { session, out: [] };
@@ -147,7 +176,7 @@ export function joinIntake(session: IntakeSession, participant: Participant): In
   if (allParticipants(session.config).some((p) => p.id === participant.id)) return { session, out: [] };
   const before = render(session);
   const config = { ...session.config, participants: [...session.config.participants, participant] };
-  const ui = { ...session.ui, [participant.id]: { mode: { kind: 'idle' } as Mode, notice: null, activity: 0, listPostedAt: 0 } };
+  const ui = { ...session.ui, [participant.id]: newUi() };
   const next: IntakeSession = { ...session, config, ui };
   const step = emit(next, before);
   return { session: step.session, out: [welcomeMessage(next, participant), ...step.out] };
@@ -199,6 +228,8 @@ function handleFiles(session: IntakeSession, from: UserId, files: AudioFile[]): 
 }
 
 function handleText(session: IntakeSession, from: UserId, text: string): IntakeSession {
+  const { mode } = session.ui[from]!;
+  if (mode.kind === 'awaitStart') return handleStartText(session, from, mode.submissionId, text);
   const target = titleTarget(session, from);
   if (!target) {
     return setUi(session, from, { notice: 'Чтобы поправить название, нажми «✏️ Исправить» под списком.' });
@@ -216,14 +247,61 @@ function handleText(session: IntakeSession, from: UserId, text: string): IntakeS
   return setUi({ ...session, intake }, from, { notice, mode: { kind: 'idle' } });
 }
 
+function handleStartText(session: IntakeSession, from: UserId, submissionId: string, text: string): IntakeSession {
+  const target = session.intake.submissions.find((s) => s.id === submissionId);
+  if (!target || target.rejection) return setUi(session, from, { mode: { kind: 'idle' }, notice: 'Этой песни уже нет в списке.' });
+  const startSec = parseClock(text);
+  if (startSec === null) return setUi(session, from, { notice: `Не разобрал «${text}». ${START_FORMAT}` });
+  const latest = latestStart(target, session.config.fragmentSec);
+  if (startSec > latest) {
+    const duration = formatClock(target.file.durationSec!);
+    return setUi(session, from, {
+      notice: `Песня длится ${duration}, фрагмент ${session.config.fragmentSec} с — начало не позже ${formatClock(latest)}.`,
+    });
+  }
+  const number = ordered(session, from).findIndex((s) => s.id === target.id) + 1;
+  const intake = setStart(session.intake, target.id, startSec);
+  return setUi({ ...session, intake }, from, {
+    mode: { kind: 'idle' },
+    notice: `Песня ${number} начнётся с ${formatClock(startSec)}.`,
+    preview: target.id,
+    previewPostedAt: -1,
+  });
+}
+
+// Позднее начало, при котором фрагмент целиком умещается в песню (и не заходит в последние tailSec):
+// иначе в конце остаются секунды затухания или тишина. Длительность известна не всегда.
+function latestStart(submission: Submission, fragmentSec: number, tailSec = 0): number {
+  const duration = submission.file.durationSec;
+  return duration === undefined ? Number.POSITIVE_INFINITY : Math.max(0, duration - fragmentSec - tailSec);
+}
+
 type ButtonResult = { session: IntakeSession } | { toast: string };
 
 function handleButton(session: IntakeSession, from: UserId, data: string): ButtonResult {
   if (data === 'cancel') return { session: setUi(session, from, { mode: { kind: 'idle' }, notice: null }) };
 
-  const pick = /^pick:(edit|remove)$/.exec(data);
+  const shift = /^shift:(\w+):(-?\d+)$/.exec(data);
+  if (shift) {
+    const target = session.intake.submissions.find((s) => s.id === shift[1] && s.owner === from && !s.rejection);
+    if (!target) return { toast: 'Этой песни уже нет в списке' };
+    const latest = latestStart(target, session.config.fragmentSec);
+    const startSec = Math.min(Math.max(0, target.startSec + Number(shift[2])), latest);
+    if (startSec === target.startSec) return { toast: 'Дальше сдвигать некуда' };
+    const intake = setStart(session.intake, target.id, startSec);
+    return { session: setUi({ ...session, intake }, from, { preview: target.id }) };
+  }
+
+  const roll = /^random:(\w+)$/.exec(data);
+  if (roll) {
+    const target = session.intake.submissions.find((s) => s.id === roll[1] && s.owner === from && !s.rejection);
+    if (!target) return { toast: 'Этой песни уже нет в списке' };
+    return randomStart(session, from, target);
+  }
+
+  const pick = /^pick:(edit|remove|start|listen)$/.exec(data);
   if (pick) {
-    const action = pick[1] as 'edit' | 'remove';
+    const action = pick[1] as PickAction;
     if (candidates(session, from, action).length === 0) return { toast: 'Пока нечего выбирать' };
     return { session: setUi(session, from, { mode: { kind: 'pick', action }, notice: null }) };
   }
@@ -236,6 +314,14 @@ function handleButton(session: IntakeSession, from: UserId, data: string): Butto
 
   if (mode.action === 'edit') {
     return { session: setUi(session, from, { mode: { kind: 'awaitTitle', submissionId: submission.id }, notice: null }) };
+  }
+  if (mode.action === 'start') {
+    return { session: setUi(session, from, { mode: { kind: 'awaitStart', submissionId: submission.id }, notice: null }) };
+  }
+  if (mode.action === 'listen') {
+    return {
+      session: setUi(session, from, { mode: { kind: 'idle' }, notice: null, preview: submission.id, previewPostedAt: -1 }),
+    };
   }
   const intake = remove(session.intake, submission.id);
   return {
@@ -261,6 +347,38 @@ function handleOrganizer(session: IntakeSession, data: string): ButtonResult {
   return { toast: 'Сейчас это действие недоступно' };
 }
 
+// Случайное начало: фрагмент целиком в песне и не в концовке. Бросок зависит от seed турнира
+// и счётчика бросков участника, поэтому повтор журнала даёт то же начало.
+function randomStart(session: IntakeSession, from: UserId, target: Submission): ButtonResult {
+  if (target.file.durationSec === undefined) return { toast: 'Не знаю длину песни — напиши время сам' };
+  const latest = latestStart(target, session.config.fragmentSec, OUTRO_SEC);
+  if (latest === 0) return { toast: 'Песня короткая — случайное место не выбрать' };
+
+  const ui = session.ui[from]!;
+  let rolls = ui.rolls;
+  let startSec = target.startSec;
+  // Выпало то же место — бросаем ещё раз, иначе нажатие ничего не изменит.
+  for (let tries = 0; startSec === target.startSec && tries < 20; tries++) {
+    rolls++;
+    const random = seededRandom(session.config.seed ^ hashText(`${target.id}:${rolls}`));
+    startSec = Math.floor(random() * (latest + 1));
+  }
+  const intake = setStart(session.intake, target.id, startSec);
+  const fromPrompt = ui.mode.kind === 'awaitStart';
+  const number = ordered(session, from).findIndex((s) => s.id === target.id) + 1;
+  return {
+    session: setUi({ ...session, intake }, from, {
+      rolls,
+      preview: target.id,
+      ...(fromPrompt && {
+        mode: { kind: 'idle' },
+        notice: `Песня ${number} начнётся с ${formatClock(startSec)} — выбрал случайно.`,
+        previewPostedAt: -1,
+      }),
+    }),
+  };
+}
+
 function setUi(session: IntakeSession, userId: UserId, patch: Partial<UserUi>): IntakeSession {
   return { ...session, ui: { ...session.ui, [userId]: { ...session.ui[userId]!, ...patch } } };
 }
@@ -272,7 +390,7 @@ function titleTarget(session: IntakeSession, userId: UserId): Submission | undef
   return ordered(session, userId).find((s) => statusOf(s) === 'needs_title');
 }
 
-function candidates(session: IntakeSession, userId: UserId, action: 'edit' | 'remove'): Submission[] {
+function candidates(session: IntakeSession, userId: UserId, action: PickAction): Submission[] {
   const list = ordered(session, userId);
   return action === 'remove' ? list : list.filter((s) => !s.rejection);
 }
@@ -292,12 +410,17 @@ function emit(next: IntakeSession, before: OutgoingMessage[], author?: UserId): 
   const out: OutgoingMessage[] = [];
   let session = next;
   for (const message of render(next)) {
-    const unchanged = previous.get(`${message.to}/${message.slot}`) === JSON.stringify(message);
-    if (unchanged && !(message.to === author && message.slot === 'list')) continue;
     const ui = session.ui[message.to];
+    const unchanged = previous.get(`${message.to}/${message.slot}`) === JSON.stringify(message);
+    // Фрагмент, который попросили послушать ещё раз, переотправляется вниз, даже если не изменился.
+    const recalled = message.slot === 'preview' && ui !== undefined && ui.previewPostedAt < 0;
+    if (unchanged && !recalled && !(message.to === author && message.slot === 'list')) continue;
     if (ui && message.slot === 'list' && ui.activity > ui.listPostedAt) {
       out.push({ ...message, bump: true });
       session = setUi(session, message.to, { listPostedAt: ui.activity });
+    } else if (ui && message.slot === 'preview' && ui.activity > ui.previewPostedAt) {
+      out.push({ ...message, bump: true });
+      session = setUi(session, message.to, { previewPostedAt: ui.activity });
     } else {
       out.push(message);
     }
@@ -306,7 +429,9 @@ function emit(next: IntakeSession, before: OutgoingMessage[], author?: UserId): 
 }
 
 export function render(session: IntakeSession): OutgoingMessage[] {
-  return [...session.config.participants.map((p) => renderList(session, p.id)), renderOrganizer(session)];
+  const { participants } = session.config;
+  const previews = participants.flatMap((p) => renderPreview(session, p.id) ?? []);
+  return [...participants.map((p) => renderList(session, p.id)), ...previews, renderOrganizer(session)];
 }
 
 function renderList(session: IntakeSession, userId: UserId): OutgoingMessage {
@@ -330,7 +455,10 @@ function renderList(session: IntakeSession, userId: UserId): OutgoingMessage {
 
   const active = list.filter((s) => !s.rejection);
   if (active.length > 0) lines.push('');
-  for (const s of active) lines.push(`${number.get(s.id)}. ${labelOf(s)} ${statusMark(s)}`);
+  for (const s of active) {
+    const start = s.startSec > 0 ? ` · с ${formatClock(s.startSec)}` : '';
+    lines.push(`${number.get(s.id)}. ${labelOf(s)} ${statusMark(s)}${start}`);
+  }
   const rejected = list.filter((s) => s.rejection);
   if (rejected.length > 0) {
     lines.push('', 'Не подошло — пришли замену:');
@@ -341,14 +469,20 @@ function renderList(session: IntakeSession, userId: UserId): OutgoingMessage {
   if (ui.notice) footer.push(ui.notice);
   const target = session.closed ? undefined : titleTarget(session, userId);
   const { mode } = ui;
-  if (target && mode.kind !== 'pick') {
+  if (target && mode.kind !== 'pick' && mode.kind !== 'awaitStart') {
     footer.push(
       mode.kind === 'awaitTitle'
         ? `✏️ Песня ${number.get(target.id)}: сейчас «${labelOf(target)}». ${TITLE_FORMAT}`
         : `✏️ Песня ${number.get(target.id)} (${target.file.fileName ?? 'без имени'}): не нашёл название. ${TITLE_FORMAT}`,
     );
   }
-  if (mode.kind === 'pick') footer.push(mode.action === 'edit' ? 'Какую песню исправить?' : 'Какую песню убрать?');
+  if (mode.kind === 'awaitStart') {
+    const song = list.find((s) => s.id === mode.submissionId);
+    if (song) {
+      footer.push(`⏱ Песня ${number.get(song.id)}: сейчас с ${formatClock(song.startSec)}. С какого момента её играть? ${START_FORMAT}`);
+    }
+  }
+  if (mode.kind === 'pick') footer.push(PICK_PROMPT[mode.action]);
   if (footer.length > 0) lines.push('', ...footer);
 
   return {
@@ -375,6 +509,14 @@ function listButtons(
     }
     return [...rows, [{ label: 'Отмена', data: 'cancel' }]];
   }
+  if (mode.kind === 'awaitStart') {
+    return [
+      [
+        { label: '🎲 Случайно', data: `random:${mode.submissionId}` },
+        { label: 'Отмена', data: 'cancel' },
+      ],
+    ];
+  }
   if (mode.kind === 'awaitTitle') return [[{ label: 'Отмена', data: 'cancel' }]];
   if (list.length === 0) return undefined;
   return [
@@ -382,7 +524,53 @@ function listButtons(
       { label: '✏️ Исправить', data: 'pick:edit' },
       { label: '🗑 Убрать', data: 'pick:remove' },
     ],
+    [
+      { label: '⏱ Начало', data: 'pick:start' },
+      { label: '🎧 Послушать', data: 'pick:listen' },
+    ],
   ];
+}
+
+const PICK_PROMPT: Record<PickAction, string> = {
+  edit: 'Какую песню исправить?',
+  remove: 'Какую песню убрать?',
+  start: 'Для какой песни выбрать начало?',
+  listen: 'Какую песню послушать?',
+};
+
+// Фрагмент песни так, как его услышит судья, и кнопки сдвига начала.
+function renderPreview(session: IntakeSession, userId: UserId): OutgoingMessage | undefined {
+  const { preview } = session.ui[userId]!;
+  const list = ordered(session, userId);
+  const song = list.find((s) => s.id === preview);
+  if (!song || song.rejection) return undefined;
+
+  const status =
+    song.processing === 'pending'
+      ? '⏳ Нарезаю фрагмент…'
+      : song.gameFileId
+        ? 'Так её услышит судья.'
+        : 'Фрагменты сейчас не нарезаются — судья включит песню сам с этого места.';
+  const lines = [
+    `🎧 Песня ${list.indexOf(song) + 1}: ${labelOf(song)}`,
+    `Начало ${formatClock(song.startSec)} · до ${session.config.fragmentSec} с`,
+    status,
+  ];
+  if (!session.closed) lines.push('Сдвинуть начало или выбрать случайно:');
+
+  return {
+    kind: 'message',
+    to: userId,
+    slot: 'preview',
+    text: lines.join('\n'),
+    audio: song.gameFileId ? { title: 'Трек', performer: 'Музыкальный турнир', fileId: song.gameFileId } : undefined,
+    buttons: session.closed
+      ? undefined
+      : [
+          SHIFTS.map((d) => ({ label: d < 0 ? `−${-d} с` : `+${d} с`, data: `shift:${song.id}:${d}` })),
+          [{ label: '🎲 Случайно', data: `random:${song.id}` }],
+        ],
+  };
 }
 
 function renderOrganizer(session: IntakeSession): OutgoingMessage {

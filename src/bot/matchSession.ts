@@ -14,6 +14,7 @@ import {
 import { formatPoints, regularTracks, type Ruleset } from '../domain/match/ruleset.ts';
 import { eligibleSongs, pickLeastUsed, type PoolSong } from '../domain/selection/pickSong.ts';
 import { seededRandom } from '../shared/random.ts';
+import { formatClock } from '../shared/text.ts';
 import { NOOP, type Button, type Incoming, type Outgoing, type OutgoingMessage, type UserId } from './protocol.ts';
 
 // Сессия одного отборочного матча в памяти: превращает нажатия кнопок в команды ядра и рендерит
@@ -31,6 +32,8 @@ export interface LibrarySong extends PoolSong {
   audioUrl?: string;
   // file_id игровой версии в Telegram — его выдаёт worker после обработки.
   audioFileId?: string;
+  // Начало, заданное автором. Игровая версия уже нарезана с него; без неё судья включает песню сам.
+  startSec?: number;
 }
 
 export interface MatchSessionConfig {
@@ -224,10 +227,11 @@ function renderJudge(session: MatchSession): Draft[] {
   issued.forEach((track, index) => {
     const song = config.library.find((s) => s.id === track.songId)!;
     const isCurrent = index === issued.length - 1;
+    const startHint = !song.audioFileId && song.startSec ? `Включите с ${formatClock(song.startSec)}` : '';
     drafts.push({
       kind: 'message',
       slot: `audio:${index}`,
-      text: '',
+      text: startHint,
       audio: { title: `Трек ${track.number}`, performer: 'Музыкальный турнир', url: song.audioUrl, fileId: song.audioFileId },
     });
     drafts.push(message(`answers:${index}`, answersText(track.number, song)));

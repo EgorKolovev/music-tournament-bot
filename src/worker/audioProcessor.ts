@@ -12,11 +12,15 @@ export interface AudioJob {
   submissionId: string;
   fileId: string;
   sizeBytes?: number;
+  // С какой секунды резать фрагмент; 0 — с начала песни после тишины.
+  startSec: number;
 }
 
 export interface AudioResult {
   submissionId: string;
   ok: boolean;
+  // Начало из задачи: по нему ядро отличает устаревший результат.
+  startSec: number;
   gameFileId?: string;
   // Длительность исходного файла по ffprobe.
   durationSec?: number;
@@ -50,7 +54,7 @@ export function createAudioProcessor(deps: AudioProcessorDeps): (job: AudioJob) 
   return async (job) => {
     const fail = (reason: string, durationSec?: number): AudioResult => {
       deps.log.warn(`аудио ${job.submissionId}: ${reason}`);
-      return { submissionId: job.submissionId, ok: false, reason, durationSec };
+      return { submissionId: job.submissionId, ok: false, startSec: job.startSec, reason, durationSec };
     };
     if (job.sizeBytes !== undefined && job.sizeBytes > MAX_DOWNLOAD_BYTES) return fail('too_large');
 
@@ -82,7 +86,11 @@ export function createAudioProcessor(deps: AudioProcessorDeps): (job: AudioJob) 
       const probe = await probeAudio(ffprobe, input, timeoutMs);
       if (!probe) return fail('corrupt');
 
-      const encoded = await run(ffmpeg, gameArgs(input, output, fragmentSec), timeoutMs);
+      // Длительность из Telegram известна не всегда: слишком позднее начало сдвигаем так,
+      // чтобы фрагмент уместился целиком, — иначе останется хвост с затуханием или тишиной.
+      const startSec = Math.min(job.startSec, Math.max(0, Math.floor(probe.durationSec - fragmentSec)));
+      if (startSec !== job.startSec) deps.log.warn(`аудио ${job.submissionId}: начало ${job.startSec} с → ${startSec} с`);
+      const encoded = await run(ffmpeg, gameArgs(input, output, fragmentSec, startSec), timeoutMs);
       if (encoded.code !== 0) {
         deps.log.warn(`ffmpeg ${job.submissionId}: ${encoded.timedOut ? 'таймаут' : encoded.stderr.trim()}`);
         return fail('corrupt', probe.durationSec);
@@ -101,7 +109,13 @@ export function createAudioProcessor(deps: AudioProcessorDeps): (job: AudioJob) 
         performer: GAME_PERFORMER,
       });
       if (!sent.audio?.file_id) throw new Error(`sendAudio без audio.file_id для ${job.submissionId}`);
-      return { submissionId: job.submissionId, ok: true, gameFileId: sent.audio.file_id, durationSec: probe.durationSec };
+      return {
+        submissionId: job.submissionId,
+        ok: true,
+        startSec: job.startSec,
+        gameFileId: sent.audio.file_id,
+        durationSec: probe.durationSec,
+      };
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -111,15 +125,17 @@ export function createAudioProcessor(deps: AudioProcessorDeps): (job: AudioJob) 
 // Первый аудиопоток без обложки, метаданных и глав; срез начальной тишины, фрагмент,
 // однопроходная нормализация громкости, MP3 160 кбит/с CBR, 44,1 кГц, стерео, без ID3.
 // Заголовок Xing/LAME тоже выключен: ffprobe показывает из него тег encoder, а для CBR он не нужен.
-export function gameArgs(input: string, output: string, fragmentSec: number): string[] {
+// Начало, выбранное автором, — точное место: тишина срезается только у начала песни.
+export function gameArgs(input: string, output: string, fragmentSec: number, startSec = 0): string[] {
   const filters = [
-    'silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB',
+    ...(startSec > 0 ? [] : ['silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB']),
     `atrim=duration=${fragmentSec}`,
     'loudnorm=I=-16:TP=-1.5:LRA=11',
     'aresample=44100',
   ].join(',');
   return [
     '-nostdin', '-hide_banner', '-v', 'error', '-y',
+    ...(startSec > 0 ? ['-ss', String(startSec)] : []),
     '-i', input,
     '-map', '0:a:0', '-vn', '-sn', '-dn',
     '-map_metadata', '-1', '-map_chapters', '-1',

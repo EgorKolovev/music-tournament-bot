@@ -7,6 +7,7 @@ import {
   DEFAULT_INTAKE_RULES,
   receiveFiles,
   remove,
+  setStart,
   setTitle,
   statusOf,
   submissionsOf,
@@ -120,5 +121,30 @@ describe('дубли', () => {
     state = processAll(setTitle(state, submissionsOf(state, BORIS)[0]!.id, fromText('Би 2 — Полковнику никто не пишет')!));
     expect(statuses(state, BORIS)).toEqual([['accepted', null]]);
     expect(acceptedSongs(state)[0]?.knownBy).toEqual([ANYA, BORIS]);
+  });
+});
+
+describe('начало фрагмента', () => {
+  it('новое начало отправляет песню на перенарезку; результат со старым началом не засчитывается', () => {
+    let state = processAll(receiveFiles(createIntake(DEFAULT_INTAKE_RULES), ANYA, songs(1, 'A')));
+    const id = state.submissions[0]!.id;
+    state = completeProcessing(setStart(state, id, 0), id, true);
+    expect(state.submissions[0]!.processing).toBe('ok');
+
+    state = setStart(state, id, 75);
+    expect(statusOf(state.submissions[0]!)).toBe('processing');
+    // Пока режется заново, песня не в библиотеке.
+    expect(acceptedSongs(state)).toHaveLength(0);
+
+    state = completeProcessing(state, id, true, { startSec: 0, gameFileId: 'OLD' });
+    expect(statusOf(state.submissions[0]!)).toBe('processing');
+    state = completeProcessing(state, id, true, { startSec: 75, gameFileId: 'NEW' });
+    expect(state.submissions[0]).toMatchObject({ startSec: 75, processing: 'ok', gameFileId: 'NEW' });
+  });
+
+  it('отклонённой заявке начало не меняется', () => {
+    let state = receiveFiles(createIntake(DEFAULT_INTAKE_RULES), ANYA, [audio('A', 'B', { mimeType: 'audio/wav' })]);
+    state = setStart(state, state.submissions[0]!.id, 30);
+    expect(state.submissions[0]!.startSec).toBe(0);
   });
 });

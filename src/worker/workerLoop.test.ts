@@ -28,8 +28,8 @@ class MemorySource implements JobSource {
 describe('WorkerLoop', () => {
   it('ошибка одной задачи уходит в повтор, следующая обрабатывается', async () => {
     const source = new MemorySource([
-      { submissionId: 'a', fileId: 'A' },
-      { submissionId: 'b', fileId: 'B' },
+      { submissionId: 'a', fileId: 'A', startSec: 0 },
+      { submissionId: 'b', fileId: 'B', startSec: 0 },
     ]);
     const results: string[] = [];
     const abort = new AbortController();
@@ -37,7 +37,7 @@ describe('WorkerLoop', () => {
       source,
       process: async (job) => {
         if (job.submissionId === 'a') throw new Error('сеть');
-        return { submissionId: job.submissionId, ok: true };
+        return { submissionId: job.submissionId, ok: true, startSec: job.startSec };
       },
       onResult: (result) => {
         results.push(result.submissionId);
@@ -49,7 +49,7 @@ describe('WorkerLoop', () => {
     await loop.start(abort.signal);
 
     expect(source.retried).toEqual(['a']);
-    expect(source.completed).toEqual([{ submissionId: 'b', ok: true }]);
+    expect(source.completed).toEqual([{ submissionId: 'b', ok: true, startSec: 0 }]);
     expect(results).toEqual(['b']);
   });
 
@@ -65,9 +65,9 @@ describe('WorkerLoop', () => {
     });
     const running = loop.start(abort.signal);
     await new Promise((resolve) => setTimeout(resolve, 10));
-    source.queue.push({ submissionId: 'c', fileId: 'C' });
+    source.queue.push({ submissionId: 'c', fileId: 'C', startSec: 0 });
     loop.kick();
     await running;
-    expect(source.completed).toEqual([{ submissionId: 'c', ok: true }]);
+    expect(source.completed).toEqual([{ submissionId: 'c', ok: true, startSec: 0 }]);
   });
 });

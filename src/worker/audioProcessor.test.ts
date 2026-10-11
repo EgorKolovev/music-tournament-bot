@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { GrammyError, InputFile } from 'grammy';
 import { FakeApi, silentLog } from '../telegram/fakeApi.ts';
-import { createAudioProcessor, type AudioProcessorDeps } from './audioProcessor.ts';
+import { createAudioProcessor, gameArgs, type AudioProcessorDeps } from './audioProcessor.ts';
 
 const hasFfmpeg =
   spawnSync('ffmpeg', ['-version']).status === 0 && spawnSync('ffprobe', ['-version']).status === 0;
@@ -77,11 +77,17 @@ function probe(path: string) {
   };
 }
 
+// Средняя громкость первых seconds секунд, дБ; цифровая тишина — около −91.
+function meanVolume(path: string, seconds: number): number {
+  const out = spawnSync('ffmpeg', ['-v', 'info', '-t', String(seconds), '-i', path, '-af', 'volumedetect', '-f', 'null', '-']);
+  return Number(/mean_volume: (-?[\d.]+) dB/.exec(out.stderr.toString())![1]);
+}
+
 describe('createAudioProcessor', () => {
   it.skipIf(!hasFfmpeg)('собирает обезличенный фрагмент до 60 секунд и отправляет в служебный чат', async () => {
     const { api, process } = setup(() => tagged);
     const before = await readdir(dir);
-    const result = await process({ submissionId: 's1', fileId: 'F1' });
+    const result = await process({ submissionId: 's1', fileId: 'F1', startSec: 0 });
 
     expect(result).toMatchObject({ submissionId: 's1', ok: true, gameFileId: 'GAME-1' });
     expect(result.durationSec).toBeGreaterThan(90);
@@ -108,10 +114,36 @@ describe('createAudioProcessor', () => {
     expect(await readdir(dir)).toEqual(before);
   }, 60_000);
 
+  it.skipIf(!hasFfmpeg)('режет с начала, выбранного автором; слишком позднее — так, чтобы фрагмент уместился', async () => {
+    const { api, process } = setup(() => tagged);
+    // Исходник: 3 с тишины, затем тон. С 1-й секунды без перемотки фрагмент начался бы с тишины.
+    expect(await process({ submissionId: 's6', fileId: 'F6', startSec: 33 })).toMatchObject({ ok: true, startSec: 33 });
+    // Исходник 93 с: с 90-й секунды остались бы 3 с — режем с 33-й.
+    expect(await process({ submissionId: 's7', fileId: 'F7', startSec: 90 })).toMatchObject({ ok: true, startSec: 90 });
+
+    for (const [i, sent] of api.sent.entries()) {
+      const out = join(dir, `start-${i}.mp3`);
+      await writeFile(out, (await (sent.params.audio as InputFile).toRaw()) as Uint8Array);
+      expect(Number(probe(out).format.duration)).toBeGreaterThan(55);
+      expect(meanVolume(out, 1)).toBeGreaterThan(-40);
+      await rm(out);
+    }
+  }, 60_000);
+
+  it('gameArgs: с началом — перемотка без среза тишины, без начала — срез тишины', () => {
+    const fromStart = gameArgs('in', 'out', 60);
+    expect(fromStart).not.toContain('-ss');
+    expect(fromStart.join(' ')).toContain('silenceremove');
+    const fromMiddle = gameArgs('in', 'out', 60, 75);
+    expect(fromMiddle.slice(fromMiddle.indexOf('-ss'), fromMiddle.indexOf('-ss') + 2)).toEqual(['-ss', '75']);
+    expect(fromMiddle.indexOf('-ss')).toBeLessThan(fromMiddle.indexOf('-i'));
+    expect(fromMiddle.join(' ')).not.toContain('silenceremove');
+  });
+
   it.skipIf(!hasFfmpeg)('битый файл — ok:false corrupt, без отправки', async () => {
     const { api, process } = setup(() => randomBytes(50_000));
-    const result = await process({ submissionId: 's2', fileId: 'F2' });
-    expect(result).toEqual({ submissionId: 's2', ok: false, reason: 'corrupt', durationSec: undefined });
+    const result = await process({ submissionId: 's2', fileId: 'F2', startSec: 0 });
+    expect(result).toEqual({ submissionId: 's2', ok: false, startSec: 0, reason: 'corrupt', durationSec: undefined });
     expect(api.sent).toHaveLength(0);
   }, 30_000);
 
@@ -122,15 +154,15 @@ describe('createAudioProcessor', () => {
       return new Uint8Array();
     });
     api.fileSize = 25 * 1024 * 1024;
-    expect(await process({ submissionId: 's3', fileId: 'F3' })).toMatchObject({ ok: false, reason: 'too_large' });
+    expect(await process({ submissionId: 's3', fileId: 'F3', startSec: 0 })).toMatchObject({ ok: false, reason: 'too_large' });
     api.failNext('getFile', 400, 'Bad Request: file is too big');
-    expect(await process({ submissionId: 's4', fileId: 'F4' })).toMatchObject({ ok: false, reason: 'too_large' });
+    expect(await process({ submissionId: 's4', fileId: 'F4', startSec: 0 })).toMatchObject({ ok: false, reason: 'too_large' });
     expect(downloaded).toBe(false);
   });
 
   it('временная ошибка Telegram пробрасывается для повтора', async () => {
     const { api, process } = setup(() => new Uint8Array());
     api.failNext('getFile', 502, 'Bad Gateway');
-    await expect(process({ submissionId: 's5', fileId: 'F5' })).rejects.toBeInstanceOf(GrammyError);
+    await expect(process({ submissionId: 's5', fileId: 'F5', startSec: 0 })).rejects.toBeInstanceOf(GrammyError);
   });
 });

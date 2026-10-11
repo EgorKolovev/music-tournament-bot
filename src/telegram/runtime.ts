@@ -117,7 +117,8 @@ export class Runtime {
   }
 
   workerResult(result: AudioResult): Promise<void> {
-    const results = [{ submissionId: result.submissionId, ok: result.ok, gameFileId: result.gameFileId }];
+    const { submissionId, ok, gameFileId, startSec } = result;
+    const results = [{ submissionId, ok, gameFileId, startSec }];
     return this.enqueue(() => this.process({ kind: 'worker', results }, []));
   }
 
@@ -125,8 +126,9 @@ export class Runtime {
     return this.enqueue(async () => {
       // Файлы, которые так и не удалось обработать, — окончательная неудача, участник пришлёт замену.
       for (const job of await this.store.exhaustedJobs()) {
-        await this.store.complete({ submissionId: job.submissionId, ok: false, reason: 'attempts' });
-        await this.process({ kind: 'worker', results: [{ submissionId: job.submissionId, ok: false }] }, []);
+        const { submissionId, startSec } = job;
+        await this.store.complete({ submissionId, ok: false, startSec, reason: 'attempts' });
+        await this.process({ kind: 'worker', results: [{ submissionId, ok: false, startSec }] }, []);
       }
       await this.process({ kind: 'tick' }, []);
     });
@@ -194,6 +196,7 @@ export class Runtime {
       submissionId: s.id,
       fileId: s.file.fileId,
       sizeBytes: s.file.sizeBytes,
+      startSec: s.startSec,
     }));
     if (jobs.length > 0 && (await this.store.enqueueJobs(jobs)) > 0) this.onJobs();
   }

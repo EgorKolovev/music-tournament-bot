@@ -21,6 +21,7 @@ export function testConfig(overrides: Partial<TournamentConfig> = {}): Tournamen
     seed: 42,
     roundDays: 7,
     intakeRules: { ...DEFAULT_INTAKE_RULES, maxSubmissions: 10 },
+    fragmentSec: 60,
     finalPoolTarget: 15,
     qualifierRuleset: QUALIFIER_RULESET,
     finalRuleset: FINAL_RULESET,
@@ -97,16 +98,24 @@ export class TestBot {
       fileName: `track${i}.mp3`,
       mimeType: 'audio/mpeg',
       sizeBytes: 5_000_000,
+      durationSec: 180,
       performer: `Группа ${id}-${i}`,
       title: `Песня ${i}`,
     }));
     this.send({ kind: 'files', from: sender(id), files });
   }
 
-  processAudio(): void {
+  // cut: false — режим без нарезки (AUDIO_MODE=skip): игровых версий нет.
+  processAudio({ cut = true } = {}): void {
     const pending = this.state.intake.intake.submissions.filter((s) => s.processing === 'pending' && !s.rejection);
     if (pending.length === 0) return;
-    this.send({ kind: 'worker', results: pending.map((s) => ({ submissionId: s.id, ok: true, gameFileId: `G-${s.id}` })) });
+    const results = pending.map((s) => ({
+      submissionId: s.id,
+      ok: true,
+      startSec: s.startSec,
+      gameFileId: cut ? `G-${s.id}@${s.startSec}` : undefined,
+    }));
+    this.send({ kind: 'worker', results });
   }
 
   private findButton(id: UserId, action: string): string | undefined {

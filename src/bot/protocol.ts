@@ -51,8 +51,17 @@ export type Incoming =
   // адаптер собирает их по media_group_id и короткой паузе.
   | { kind: 'files'; from: UserId; files: AudioFile[] }
   // Внутреннее событие: worker закончил обработку файлов.
-  // gameFileId — file_id обезличенной игровой версии в Telegram, если worker её собрал.
-  | { kind: 'worker'; results: { submissionId: string; ok: boolean; gameFileId?: string }[] };
+  | { kind: 'worker'; results: WorkerResult[] };
+
+export interface WorkerResult {
+  submissionId: string;
+  ok: boolean;
+  // file_id обезличенной игровой версии в Telegram, если worker её собрал.
+  gameFileId?: string;
+  // С какой секунды резался фрагмент. Автор мог сдвинуть начало, пока шла нарезка, —
+  // такой результат устарел. Без поля результат не проверяется (симулятор).
+  startSec?: number;
+}
 
 export type UserIncoming = Exclude<Incoming, { kind: 'worker' }>;
 

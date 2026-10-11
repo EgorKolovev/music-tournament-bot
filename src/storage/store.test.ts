@@ -68,14 +68,14 @@ describe('Store на PostgreSQL (PGlite)', () => {
 
   it('очередь аудио: по порядку, без дублей, с паузой после ошибки и отказом после пяти попыток', async () => {
     const { store } = await open();
-    expect(await store.enqueueJobs([{ submissionId: 'a', fileId: 'A', sizeBytes: 3_000_000_000 }, { submissionId: 'b', fileId: 'B' }])).toBe(2);
-    expect(await store.enqueueJobs([{ submissionId: 'a', fileId: 'A' }])).toBe(0);
+    expect(await store.enqueueJobs([{ submissionId: 'a', fileId: 'A', sizeBytes: 3_000_000_000, startSec: 0 }, { submissionId: 'b', fileId: 'B', startSec: 0 }])).toBe(2);
+    expect(await store.enqueueJobs([{ submissionId: 'a', fileId: 'A', startSec: 0 }])).toBe(0);
 
-    expect(await store.claim()).toEqual({ submissionId: 'a', fileId: 'A', sizeBytes: 3_000_000_000 });
+    expect(await store.claim()).toEqual({ submissionId: 'a', fileId: 'A', sizeBytes: 3_000_000_000, startSec: 0 });
     const b = (await store.claim())!;
     expect(await store.claim()).toBeUndefined();
 
-    await store.complete({ submissionId: 'a', ok: true });
+    await store.complete({ submissionId: 'a', ok: true, startSec: 0 });
     vi.useFakeTimers({ toFake: ['Date'] });
     await store.retryLater(b, new Error('сеть'));
     // Первая пауза — минута.
@@ -89,12 +89,23 @@ describe('Store на PostgreSQL (PGlite)', () => {
       if (attempt < 5) expect(await store.claim()).toMatchObject({ submissionId: 'b' });
     }
     expect(await store.claim()).toBeUndefined();
-    expect(await store.exhaustedJobs()).toEqual([{ submissionId: 'b', fileId: 'B' }]);
+    expect(await store.exhaustedJobs()).toEqual([{ submissionId: 'b', fileId: 'B', startSec: 0 }]);
+  });
+
+  it('новое начало возвращает задачу в очередь; результат со старым началом её не закрывает', async () => {
+    const { store } = await open();
+    await store.enqueueJobs([{ submissionId: 'a', fileId: 'A', startSec: 0 }]);
+    const old = (await store.claim())!;
+    expect(await store.enqueueJobs([{ submissionId: 'a', fileId: 'A', startSec: 75 }])).toBe(1);
+    expect(await store.enqueueJobs([{ submissionId: 'a', fileId: 'A', startSec: 75 }])).toBe(0);
+
+    await store.complete({ submissionId: old.submissionId, ok: true, startSec: old.startSec });
+    expect(await store.claim()).toMatchObject({ submissionId: 'a', startSec: 75 });
   });
 
   it('взятая до падения задача возвращается в очередь при следующем запуске', async () => {
     const { db, store } = await open();
-    await store.enqueueJobs([{ submissionId: 'a', fileId: 'A' }]);
+    await store.enqueueJobs([{ submissionId: 'a', fileId: 'A', startSec: 0 }]);
     await store.claim();
     const restarted = await Store.open(db);
     expect(await restarted.claim()).toMatchObject({ submissionId: 'a' });

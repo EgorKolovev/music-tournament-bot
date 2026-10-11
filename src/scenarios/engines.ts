@@ -42,6 +42,7 @@ export function intakeEngine(): Engine<IntakeSession> {
     background: backgroundSubmissions(),
     organizer: DEMO_USERS.org,
     rules: DEFAULT_INTAKE_RULES,
+    fragmentSec: 60,
     finalPoolTarget: finalPoolSize(DEFAULT_FINAL_TARGET),
     finalists: 8,
     seed: 2026,

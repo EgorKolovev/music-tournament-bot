@@ -100,8 +100,8 @@ async function toQualifiers(api: FakeApi, store: Store, runtime: Runtime) {
   for (const id of [1, 2, 3]) for (let i = 0; i < 10; i++) await runtime.receive(audioUpdate(id, i));
   await runtime.idle();
   for (let job = await store.claim(); job; job = await store.claim()) {
-    await store.complete({ submissionId: job.submissionId, ok: true });
-    await runtime.workerResult({ submissionId: job.submissionId, ok: true, gameFileId: `G-${job.submissionId}` });
+    await store.complete({ submissionId: job.submissionId, ok: true, startSec: job.startSec });
+    await runtime.workerResult({ submissionId: job.submissionId, ok: true, gameFileId: `G-${job.submissionId}`, startSec: job.startSec });
   }
   const org = user(Number(ORGANIZER), 'Орг');
   await runtime.receive(textUpdate(org, '/start'));
@@ -139,9 +139,10 @@ describe('Runtime на PostgreSQL (PGlite)', () => {
     expect(jobs()).toBe(1);
 
     const job = (await store.claim())!;
-    await store.complete({ submissionId: job.submissionId, ok: true });
-    await runtime.workerResult({ submissionId: job.submissionId, ok: true, gameFileId: 'G-1' });
-    expect(runtime.state.gameAudio[job.submissionId]).toBe('G-1');
+    await store.complete({ submissionId: job.submissionId, ok: true, startSec: job.startSec });
+    await runtime.workerResult({ submissionId: job.submissionId, ok: true, gameFileId: 'G-1', startSec: job.startSec });
+    const done = runtime.state.intake.intake.submissions.find((s) => s.id === job.submissionId)!;
+    expect(done.gameFileId).toBe('G-1');
   });
 
   it('updates, пришедшие разом, обрабатываются в порядке поступления', async () => {

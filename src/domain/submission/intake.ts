@@ -39,7 +39,11 @@ export interface Submission {
   owner: string;
   file: AudioFile;
   meta: SongMeta | null;
+  // С какой секунды играть песню; автор задаёт до закрытия сбора, 0 — с начала.
+  startSec: number;
   processing: 'pending' | 'ok' | 'failed';
+  // file_id обезличенной игровой версии в Telegram. Пока идёт перенарезка, остаётся прежний.
+  gameFileId?: string;
   rejection: RejectReason | null;
 }
 
@@ -91,6 +95,7 @@ function receiveFile(state: IntakeState, owner: string, file: AudioFile): Intake
     owner,
     file,
     meta: fromTags(file.performer, file.title) ?? fromFileName(file.fileName),
+    startSec: 0,
     processing: 'pending',
     rejection: null,
   };
@@ -124,11 +129,25 @@ export function remove(state: IntakeState, submissionId: string): IntakeState {
   return { ...state, submissions: state.submissions.filter((s) => s.id !== submissionId) };
 }
 
+// Автор сдвинул начало: игровую версию нужно нарезать заново.
+export function setStart(state: IntakeState, submissionId: string, startSec: number): IntakeState {
+  const current = find(state, submissionId);
+  if (!current || current.rejection || current.startSec === startSec) return state;
+  return update(state, submissionId, { startSec, processing: 'pending' });
+}
+
 // Вердикт worker: файл декодируется и игровая версия собрана, либо файл битый.
-export function completeProcessing(state: IntakeState, submissionId: string, ok: boolean): IntakeState {
+// Результат нарезки с прежним началом устарел — по новому началу уже стоит задача.
+export function completeProcessing(
+  state: IntakeState,
+  submissionId: string,
+  ok: boolean,
+  cut: { startSec?: number; gameFileId?: string } = {},
+): IntakeState {
   const current = find(state, submissionId);
   if (!current || current.processing !== 'pending' || current.rejection) return state;
-  if (ok) return update(state, submissionId, { processing: 'ok' });
+  if (cut.startSec !== undefined && cut.startSec !== current.startSec) return state;
+  if (ok) return update(state, submissionId, { processing: 'ok', gameFileId: cut.gameFileId ?? current.gameFileId });
   state = releaseSong(state, current);
   return update(state, submissionId, { processing: 'failed', rejection: 'corrupt' });
 }
