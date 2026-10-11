@@ -1,5 +1,6 @@
 import {
   confirmedJudge,
+  eliminated,
   handleDraw,
   inviteByLink,
   matchLabel,
@@ -12,7 +13,13 @@ import {
   render as renderDraw,
   type DrawSession,
 } from '../bot/drawSession.ts';
-import { handleFinal, openFinalSession, renderOrganizer as renderFinalOrganizer, type FinalSession } from '../bot/finalSession.ts';
+import {
+  handleFinal,
+  matchTitle as finalMatchTitle,
+  openFinalSession,
+  renderOrganizer as renderFinalOrganizer,
+  type FinalSession,
+} from '../bot/finalSession.ts';
 import {
   admittedPlayers,
   handleIntake,
@@ -30,7 +37,7 @@ import {
   type Participant,
 } from '../bot/matchSession.ts';
 import type { Button, Incoming, Outgoing, OutgoingMessage, UserId } from '../bot/protocol.ts';
-import { buildQualifierBracket, findMatch, playedMatches, qualified } from '../domain/bracket/bracket.ts';
+import { buildQualifierBracket, findMatch, openMatches, playedMatches, playersOf, qualified } from '../domain/bracket/bracket.ts';
 import { formatPoints, type Ruleset } from '../domain/match/ruleset.ts';
 import { acceptedSongs, type IntakeRules } from '../domain/submission/intake.ts';
 import { hashText } from '../shared/random.ts';
@@ -101,6 +108,14 @@ export interface MatchRuntime {
   closed: boolean;
 }
 
+// Меню организатора в панели этапа: техническая победа и снятие игрока — в несколько нажатий.
+export type AdminMenu =
+  | { kind: 'tech' }
+  | { kind: 'techWinner'; matchId: string }
+  | { kind: 'techConfirm'; matchId: string; winner: UserId }
+  | { kind: 'withdraw' }
+  | { kind: 'withdrawConfirm'; userId: UserId };
+
 export interface TournamentState {
   config: TournamentConfig;
   phase: Phase;
@@ -117,6 +132,9 @@ export interface TournamentState {
   overdueReported: Record<number, string>;
   finalJudge: Participant | null;
   final: FinalSession | null;
+  // Сняты с турнира организатором: каждый их матч отбора — техническое поражение.
+  withdrawn: UserId[];
+  adminMenu: AdminMenu | null;
   journal: string[];
 }
 
@@ -154,6 +172,8 @@ export function createTournament(config: TournamentConfig): Step {
     overdueReported: {},
     finalJudge: null,
     final: null,
+    withdrawn: [],
+    adminMenu: null,
     journal: [],
   };
   return { state, out: [...scope(state, opened.out, 'i:'), ...renderExtras(state)] };
@@ -194,6 +214,7 @@ function handleCommand(state: TournamentState, from: Sender, command: string, pa
   if (command === 'help') return say(state, from.id, helpText(state, from.id));
   if (command === 'panel' && isOrganizer(state, from.id)) return resendPanels(state);
   if (command === 'status') return say(state, from.id, statusText(state, from.id));
+  if (command === 'matches') return say(state, from.id, matchesText(state));
   if (command === 'tech' && canAdmin(state, from.id)) return technicalResult(state, from.id, payload);
   if (command === 'broadcast' && canAdmin(state, from.id)) return broadcast(state, from.id, payload);
   return say(state, from.id, 'Не знаю такой команды. /help — что я умею.');
@@ -415,6 +436,8 @@ function organizerButton(state: TournamentState, data: string, at: number): Step
   }
   if (data === 'openFinal') return openFinal(state);
   if (data === 'archive') return archive(state);
+  const menu = adminMenuButton(state, data);
+  if (menu) return menu;
   const decision = /^(keep|replay):(.+)$/.exec(data);
   if (decision) return decision[1] === 'keep' ? keepResult(state, decision[2]!) : replayMatch(state, decision[2]!);
 
@@ -533,12 +556,14 @@ function libraryOf(state: TournamentState, keys: readonly string[]): LibrarySong
 // --- Отборочные матчи ------------------------------------------------------------
 
 // Открывает матчи, у которых определились оба игрока и подтверждён судья.
+// Снятый игрок в новой паре сразу получает техническое поражение.
 function syncMatches(state: TournamentState, at: number): Step {
-  const draw = state.draw;
-  if (state.phase !== 'qualifiers' || !draw?.bracket) return { state, out: [] };
-  let next = state;
-  const out: Outgoing[] = [];
-  playedMatches(draw.bracket).forEach((match, index) => {
+  if (state.phase !== 'qualifiers' || !state.draw?.bracket) return { state, out: [] };
+  const forfeits = forfeitWithdrawn(state);
+  let next = forfeits.state;
+  const out: Outgoing[] = [...forfeits.out];
+  const draw = next.draw!;
+  playedMatches(draw.bracket!).forEach((match, index) => {
     if (next.matches[match.id] || draw.results[match.id]) return;
     const judge = confirmedJudge(draw, match.id);
     const players = matchPlayers(draw, match.id);
@@ -694,18 +719,116 @@ function technicalResult(state: TournamentState, from: UserId, payload: string):
   if (!players || !winner || !players.includes(winner.id) || state.draw.results[matchId]) {
     return say(state, from, 'Не нашёл такой открытый матч с этим игроком.');
   }
-  const reason = parsed[4]!.trim() || 'без причины';
-  const note = `технический результат: ${reason}`;
+  const awarded = awardTechnical(state, matchId, winner.id, parsed[4]!.trim() || 'без причины');
+  return { state: awarded.state, out: [...awarded.out, message(from, 'Готово.')] };
+}
+
+// Технический результат: матч закрывается, победитель проходит дальше, участникам — уведомление.
+function awardTechnical(state: TournamentState, matchId: string, winner: UserId, reason: string): Step {
+  const players = matchPlayers(state.draw!, matchId)!;
   const runtime = state.matches[matchId];
-  const people = runtime ? [runtime.session.config.judge.id, ...players] : players;
+  const people = runtime && !runtime.closed ? [runtime.session.config.judge.id, ...players] : players;
+  const note = `технический результат: ${reason}`;
+  const title = matchTitle(state, matchId);
   const closed = closeWithResult(
-    { ...state, journal: [...state.journal, `Организатор: ${matchTitle(state, matchId)} — ${note}`] },
+    { ...state, journal: [...state.journal, `Организатор: ${title} — ${note}`] },
     matchId,
-    winner.id,
+    winner,
     note,
   );
-  const notices = people.map((id) => message(id, `Матч ${matchTitle(state, matchId)} закрыт организатором: ${note}. Проходит ${winner.name}.`));
-  return { state: closed.state, out: [...closed.out, ...notices, message(from, 'Готово.')] };
+  const name = participant(state, winner).name;
+  const notices = people.map((id) => message(id, `Матч ${title} закрыт организатором: ${note}. Проходит ${name}.`));
+  return { state: closed.state, out: [...closed.out, ...notices] };
+}
+
+// Снятие с турнира: текущий матч и каждый следующий — техническое поражение снятого.
+function withdraw(state: TournamentState, userId: UserId): Step {
+  const name = participant(state, userId).name;
+  const next: TournamentState = {
+    ...state,
+    withdrawn: [...state.withdrawn, userId],
+    adminMenu: null,
+    journal: [...state.journal, `Организатор снял с турнира: ${name}`],
+  };
+  const forfeits = forfeitWithdrawn(next);
+  return { state: forfeits.state, out: [message(userId, '🚪 Организатор снял тебя с турнира. Спасибо за игру!'), ...forfeits.out] };
+}
+
+// Пары, где есть снятый, закрываются в пользу соперника. Победа может открыть следующую пару
+// с другим снятым — поэтому до тех пор, пока закрывать нечего.
+function forfeitWithdrawn(state: TournamentState): Step {
+  let next = state;
+  const out: Outgoing[] = [];
+  for (;;) {
+    const draw = next.draw!;
+    const pair = openMatches(draw.bracket!, draw.results)
+      .map((m) => ({ id: m.id, players: matchPlayers(draw, m.id)! }))
+      .find(({ players }) => players.some((id) => next.withdrawn.includes(id)));
+    if (!pair) return { state: next, out };
+    // Сняты оба — дальше проходит первый и проиграет технически в следующей паре.
+    const winner = pair.players.find((id) => !next.withdrawn.includes(id)) ?? pair.players[0];
+    const awarded = awardTechnical(next, pair.id, winner, 'соперник снят с турнира');
+    next = awarded.state;
+    out.push(...awarded.out);
+  }
+}
+
+// Шаги меню организатора; undefined — кнопка не из меню.
+function adminMenuButton(state: TournamentState, data: string): Step | undefined {
+  const organizer = state.config.organizerId;
+  const draw = state.draw;
+  const setMenu = (adminMenu: AdminMenu | null): Step => ({ state: { ...state, adminMenu }, out: [] });
+  const menu = state.adminMenu;
+
+  if (data === 'menu:close') return setMenu(null);
+  if (!data.startsWith('menu:') && !data.startsWith('tech') && !data.startsWith('withdraw')) return undefined;
+  if (state.phase !== 'qualifiers' || !draw?.bracket) return toast(setMenu(null).state, organizer, 'Это доступно во время отбора');
+
+  if (data === 'menu:tech') return setMenu({ kind: 'tech' });
+  if (data === 'menu:withdraw') return setMenu({ kind: 'withdraw' });
+  const techMatch = /^techMatch:(.+)$/.exec(data);
+  if (techMatch) {
+    if (!techCandidates(state).includes(techMatch[1]!)) return toast(state, organizer, 'Этот матч уже закрыт');
+    return setMenu({ kind: 'techWinner', matchId: techMatch[1]! });
+  }
+  const techWin = /^techWin:(.+):(.+)$/.exec(data);
+  if (techWin) {
+    const matchId = techWin[1]!;
+    const winner = techWin[2]!;
+    if (!techCandidates(state).includes(matchId) || !matchPlayers(draw, matchId)!.includes(winner)) {
+      return toast(setMenu(null).state, organizer, 'Этот матч уже закрыт');
+    }
+    return setMenu({ kind: 'techConfirm', matchId, winner });
+  }
+  if (data === 'techOk' && menu?.kind === 'techConfirm') {
+    if (!techCandidates(state).includes(menu.matchId)) return toast(setMenu(null).state, organizer, 'Этот матч уже закрыт');
+    return awardTechnical({ ...state, adminMenu: null }, menu.matchId, menu.winner, 'решение организатора');
+  }
+  const pick = /^withdrawPick:(.+)$/.exec(data);
+  if (pick) {
+    if (!withdrawCandidates(state).includes(pick[1]!)) return toast(state, organizer, 'Этого игрока снять уже нельзя');
+    return setMenu({ kind: 'withdrawConfirm', userId: pick[1]! });
+  }
+  if (data === 'withdrawOk' && menu?.kind === 'withdrawConfirm') {
+    if (!withdrawCandidates(state).includes(menu.userId)) return toast(setMenu(null).state, organizer, 'Этого игрока снять уже нельзя');
+    return withdraw(state, menu.userId);
+  }
+  return toast(setMenu(null).state, organizer, 'Меню устарело — откройте заново');
+}
+
+// Матчи, где можно засчитать техническую победу: оба игрока известны, результата нет.
+function techCandidates(state: TournamentState): string[] {
+  const draw = state.draw!;
+  return openMatches(draw.bracket!, draw.results).map((m) => m.id);
+}
+
+// Кого можно снять: ещё играет в отборе — не выбыл, не снят и не прошёл в финал.
+function withdrawCandidates(state: TournamentState): UserId[] {
+  const draw = state.draw!;
+  const finalists = qualifiedIds(draw);
+  return draw.config.players
+    .map((p) => p.id)
+    .filter((id) => !state.withdrawn.includes(id) && !finalists.includes(id) && !eliminated(draw, id));
 }
 
 function broadcast(state: TournamentState, from: UserId, text: string): Step {
@@ -810,7 +933,7 @@ function issuePanel(state: TournamentState, matchId: string, runtime: MatchRunti
   const { config, match } = runtime.session;
   const { phase } = match;
   const title = matchTitle(state, matchId);
-  const score = scoreLine(runtime);
+  const score = scoreLine(runtime.session);
   const lines = [runtime.dispute ? `⚠️ Спор по матчу ${title}` : `⏳ Результат матча ${title} не подтверждён 10 минут`, score];
   if (runtime.dispute) lines.push(`Оспорил: ${participant(state, runtime.dispute.by).name}. Судья: ${config.judge.name}.`);
   let buttons: Button[][] | undefined;
@@ -849,9 +972,11 @@ function phasePanel(state: TournamentState): OutgoingMessage {
       const played = Object.keys(draw.results).length;
       lines.push('Этап: отбор', draw.bracket ? `Сыграно матчей: ${played} из ${total}` : 'Жеребьёвка ещё не проведена');
       const live = Object.entries(state.matches).filter(([, m]) => !m.closed);
-      for (const [matchId, runtime] of live) lines.push(`🎤 ${matchTitle(state, matchId)} · ${scoreLine(runtime)}`);
-      lines.push('', 'Команды: /tech — технический результат, /broadcast — сообщение всем.');
+      for (const [matchId, runtime] of live) lines.push(`🎤 ${matchTitle(state, matchId)} · ${scoreLine(runtime.session)}`);
+      if (state.withdrawn.length > 0) lines.push(`🚪 Сняты: ${state.withdrawn.map((id) => participant(state, id).name).join(', ')}`);
+      lines.push('', 'Команды: /tech — технический результат с причиной, /broadcast — сообщение всем.');
       if (draw.bracket && qualifiersDone(draw)) buttons.push([{ label: '🏆 Отбор завершён — к финалу', data: 'o:toFinal' }]);
+      else if (draw.bracket) adminMenuPanel(state, lines, buttons);
       break;
     }
     case 'final': {
@@ -873,6 +998,51 @@ function phasePanel(state: TournamentState): OutgoingMessage {
       break;
   }
   return { kind: 'message', to: config.organizerId, slot: 'o:phase', text: lines.join('\n'), buttons: buttons.length ? buttons : undefined };
+}
+
+// Меню технической победы и снятия игрока под панелью этапа.
+function adminMenuPanel(state: TournamentState, lines: string[], buttons: Button[][]): void {
+  const menu = state.adminMenu;
+  const cancel = [{ label: 'Отмена', data: 'o:menu:close' }];
+  const name = (id: UserId) => participant(state, id).name;
+  if (!menu) {
+    buttons.push([
+      { label: '⚖️ Техническая победа', data: 'o:menu:tech' },
+      { label: '🚪 Снять игрока', data: 'o:menu:withdraw' },
+    ]);
+    return;
+  }
+  lines.push('');
+  switch (menu.kind) {
+    case 'tech': {
+      const matches = techCandidates(state);
+      lines.push(matches.length ? '⚖️ Техническая победа — в каком матче?' : '⚖️ Сейчас нет матчей, где известны оба игрока.');
+      for (const id of matches) buttons.push([{ label: matchTitle(state, id), data: `o:techMatch:${id}` }]);
+      break;
+    }
+    case 'techWinner':
+      lines.push(`⚖️ ${matchTitle(state, menu.matchId)} — кому засчитать победу?`);
+      buttons.push(matchPlayers(state.draw!, menu.matchId)!.map((id) => ({ label: `🏆 ${name(id)}`, data: `o:techWin:${menu.matchId}:${id}` })));
+      break;
+    case 'techConfirm':
+      lines.push(`⚖️ Засчитать техническую победу: ${name(menu.winner)}, матч ${matchTitle(state, menu.matchId)}?`, 'Матч закроется, отменить нельзя.');
+      buttons.push([{ label: '✅ Засчитать', data: 'o:techOk' }]);
+      break;
+    case 'withdraw': {
+      const players = withdrawCandidates(state);
+      lines.push(players.length ? '🚪 Кого снять с турнира?' : '🚪 Снимать некого: все выбыли или уже в финале.');
+      for (const id of players) buttons.push([{ label: `№${state.people[id]!.number} ${name(id)}`, data: `o:withdrawPick:${id}` }]);
+      break;
+    }
+    case 'withdrawConfirm':
+      lines.push(
+        `🚪 Снять ${name(menu.userId)} с турнира?`,
+        'Текущий матч засчитается сопернику, в каждом следующем — техническое поражение. Отменить нельзя.',
+      );
+      buttons.push([{ label: '🚪 Снять', data: 'o:withdrawOk' }]);
+      break;
+  }
+  buttons.push(cancel);
 }
 
 // Организатор потерял панели в ленте — присылаем их заново внизу.
@@ -951,8 +1121,8 @@ function matchTitle(state: TournamentState, matchId: string): string {
   return `${matchLabel(match)}${names}`;
 }
 
-function scoreLine(runtime: MatchRuntime): string {
-  const { match, config } = runtime.session;
+function scoreLine(session: MatchSession): string {
+  const { match, config } = session;
   const total: [number, number] = [0, 0];
   for (const { awards } of match.closedTracks) {
     if (awards.artist !== null) total[awards.artist] += config.ruleset.artistPoints;
@@ -962,7 +1132,12 @@ function scoreLine(runtime: MatchRuntime): string {
 }
 
 function helpText(state: TournamentState, id: UserId): string {
-  const lines = ['Я веду турнир: сбор песен, жеребьёвку, матчи и финал. Все действия — кнопками в сообщениях.', '', '/status — где ты сейчас'];
+  const lines = [
+    'Я веду турнир: сбор песен, жеребьёвку, матчи и финал. Все действия — кнопками в сообщениях.',
+    '',
+    '/status — где ты сейчас',
+    '/matches — кто с кем играет',
+  ];
   if (canAdmin(state, id)) {
     lines.push(
       '',
@@ -971,6 +1146,63 @@ function helpText(state: TournamentState, id: UserId): string {
       '/tech <матч> <номер победителя> <причина> — технический результат (неявка, снятие)',
       '/broadcast <текст> — сообщение всем участникам',
     );
+  }
+  return lines.join('\n');
+}
+
+// /matches — кто с кем играет. Видят все: пары и так знают соперников и судей.
+function matchesText(state: TournamentState): string {
+  switch (state.phase) {
+    case 'intake':
+      return '🎵 Идёт сбор песен — матчей пока нет.';
+    case 'qualifiers':
+      return qualifierMatchesText(state);
+    case 'final':
+      return finalMatchesText(state);
+    case 'archive': {
+      const champion = state.final && qualified(state.final.bracket, state.final.results)[0];
+      return `🏁 Турнир завершён${champion ? `. Победитель — ${participant(state, champion).name}` : ''}.`;
+    }
+  }
+}
+
+function qualifierMatchesText(state: TournamentState): string {
+  const draw = state.draw!;
+  if (!draw.bracket) return '🎲 Жеребьёвка ещё не проведена.';
+  const all = playedMatches(draw.bracket);
+  const live = all.filter((m) => state.matches[m.id] && !state.matches[m.id]!.closed);
+  const waiting = openMatches(draw.bracket, draw.results).filter((m) => !live.includes(m));
+  const done = all.filter((m) => draw.results[m.id]);
+  const lines = [`🎤 Отбор · сыграно ${done.length} из ${all.length}`];
+  if (live.length > 0) {
+    lines.push('', 'Сейчас играют:');
+    for (const m of live) {
+      const runtime = state.matches[m.id]!;
+      const dispute = runtime.dispute ? ' · ⚠️ спор' : '';
+      lines.push(`🎤 ${matchLabel(m)}: ${scoreLine(runtime.session)} · судья ${runtime.session.config.judge.name}${dispute}`);
+    }
+  }
+  if (waiting.length > 0) lines.push('', 'Ждут начала:', ...waiting.map((m) => `⏳ ${matchTitle(state, m.id)} · выбирают судью`));
+  if (done.length > 0) {
+    lines.push('', 'Сыграно:', ...done.map((m) => `✅ ${matchTitle(state, m.id)} → ${participant(state, draw.results[m.id]!).name}`));
+  }
+  if (state.withdrawn.length > 0) lines.push('', `🚪 Сняты: ${state.withdrawn.map((id) => participant(state, id).name).join(', ')}`);
+  return lines.join('\n');
+}
+
+function finalMatchesText(state: TournamentState): string {
+  const final = state.final;
+  if (!final) {
+    const names = finalistIds(state).map((id) => participant(state, id).name);
+    return `🏆 Финал ещё не начался. Финалисты: ${names.join(', ')}.`;
+  }
+  const lines = ['🏆 Финал'];
+  for (const m of playedMatches(final.bracket)) {
+    const title = finalMatchTitle(final, m.id);
+    const winner = final.results[m.id];
+    if (winner) lines.push(`✅ ${title} → ${participant(state, winner).name}`);
+    else if (final.current?.matchId === m.id) lines.push(`🎤 На сцене: ${scoreLine(final.current.session)}`);
+    else if (playersOf(final.bracket, final.results, m.id)) lines.push(`⏳ ${title}`);
   }
   return lines.join('\n');
 }

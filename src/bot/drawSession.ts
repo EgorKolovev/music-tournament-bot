@@ -488,7 +488,7 @@ export function qualifiersDone(session: DrawSession): boolean {
   return session.bracket !== null && playedMatches(session.bracket).every((m) => session.results[m.id]);
 }
 
-function eliminated(session: DrawSession, userId: UserId): boolean {
+export function eliminated(session: DrawSession, userId: UserId): boolean {
   return playedMatches(session.bracket!).some(
     (m) => session.results[m.id] !== undefined && session.results[m.id] !== userId && playersIn(session, m).includes(userId),
   );

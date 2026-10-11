@@ -1,5 +1,5 @@
 import { mkdirSync } from 'node:fs';
-import { Bot, GrammyError } from 'grammy';
+import { Bot, GrammyError, type Api } from 'grammy';
 import pg from 'pg';
 import { pgDatabase } from '../storage/database.ts';
 import { Store } from '../storage/store.ts';
@@ -18,6 +18,33 @@ const log: Logger = {
 };
 
 const TICK_MS = 15_000;
+
+// Меню команд в Telegram (кнопка «Меню» у поля ввода): участникам — общие, организатору и админам — ещё свои.
+const PUBLIC_COMMANDS = [
+  { command: 'matches', description: 'Кто с кем играет' },
+  { command: 'status', description: 'Где ты сейчас' },
+  { command: 'help', description: 'Что умеет бот' },
+];
+const ADMIN_COMMANDS = [
+  ...PUBLIC_COMMANDS,
+  { command: 'tech', description: 'Технический результат: /tech 1.3 <номер победителя> <причина>' },
+  { command: 'broadcast', description: 'Сообщение всем участникам' },
+];
+const ORGANIZER_COMMANDS = [...ADMIN_COMMANDS, { command: 'panel', description: 'Прислать панели заново' }];
+
+async function setCommands(api: Api, organizerId: string, adminIds: string[]): Promise<void> {
+  await api.setMyCommands(PUBLIC_COMMANDS);
+  const scoped: [string, typeof PUBLIC_COMMANDS][] = [
+    ...adminIds.filter((id) => id !== organizerId).map((id): [string, typeof PUBLIC_COMMANDS] => [id, ADMIN_COMMANDS]),
+    [organizerId, ORGANIZER_COMMANDS],
+  ];
+  for (const [id, commands] of scoped) {
+    // Пока человек не писал боту, Telegram не знает этот чат — меню появится после перезапуска.
+    await api.setMyCommands(commands, { scope: { type: 'chat', chat_id: Number(id) } }).catch((error: unknown) => {
+      log.warn(`меню команд для ${id}: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+}
 
 async function main(): Promise<void> {
   let settings;
@@ -53,6 +80,9 @@ async function main(): Promise<void> {
   }
   const me = bot.botInfo;
   mkdirSync(settings.tmpDir, { recursive: true });
+  await setCommands(bot.api, settings.tournament.organizerId, settings.tournament.adminIds).catch((error: unknown) => {
+    log.warn(`меню команд: ${error instanceof Error ? error.message : String(error)}`);
+  });
 
   const pool = new pg.Pool({ connectionString: settings.databaseUrl });
   // Обрыв простаивающего соединения не должен ронять процесс: пул откроет новое.

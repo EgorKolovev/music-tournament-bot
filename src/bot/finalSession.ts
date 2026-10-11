@@ -317,9 +317,10 @@ function organizerButtons(session: FinalSession): Button[][] | undefined {
   return rows.length ? rows : undefined;
 }
 
-function matchTitle(session: FinalSession, matchId: string): string {
+// Стадия считается с конца сетки: при двух финалистах единственный матч — «Финал».
+export function matchTitle(session: FinalSession, matchId: string): string {
   const match = findMatch(session.bracket, matchId) as BracketMatch;
-  const stage = ['Четвертьфинал', 'Полуфинал', 'Финал'][match.round - 1];
+  const stage = ['Финал', 'Полуфинал', 'Четвертьфинал'][session.bracket.rounds.length - match.round];
   const pair = playersOf(session.bracket, session.results, matchId);
   return pair ? `${stage}: ${pair.map((id) => person(session, id).name).join(' — ')}` : (stage ?? matchId);
 }

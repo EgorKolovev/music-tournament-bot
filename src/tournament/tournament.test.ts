@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { matchPlayers } from '../bot/drawSession.ts';
 import type { UserId } from '../bot/protocol.ts';
-import { openMatches } from '../domain/bracket/bracket.ts';
+import { openMatches, resolveSlot } from '../domain/bracket/bracket.ts';
 import { formatClock } from '../shared/text.ts';
 import { ORGANIZER, sender, TestBot, violations } from './testBot.ts';
 
@@ -397,6 +397,110 @@ describe('Споры и решения организатора', () => {
     const bot = readyForQualifiers();
     bot.command('1', '/tech 1.1 1 так');
     expect(Object.keys(bot.state.draw!.results)).toEqual([]);
+  });
+});
+
+describe('Инструменты организатора', () => {
+  it('техническая победа кнопками: матч → кому → подтверждение', () => {
+    const bot = readyForQualifiers();
+    const matchId = nextMatch(bot)!;
+    const [a, b] = matchPlayers(bot.state.draw!, matchId)!;
+    bot.press(ORGANIZER, 'o:menu:tech');
+    bot.press(ORGANIZER, `o:techMatch:${matchId}`);
+    bot.press(ORGANIZER, `o:techWin:${matchId}:${b}`);
+    expect(bot.allText(ORGANIZER)).toContain('Засчитать техническую победу');
+    expect(bot.state.draw!.results[matchId]).toBeUndefined();
+
+    bot.press(ORGANIZER, 'o:techOk');
+    expect(bot.state.draw!.results[matchId]).toBe(b);
+    expect(bot.state.adminMenu).toBeNull();
+    expect(bot.allText(a)).toContain('технический результат: решение организатора');
+    expect(violations(bot.outLog)).toEqual([]);
+  });
+
+  it('отмена закрывает меню, ничего не меняя', () => {
+    const bot = readyForQualifiers();
+    bot.press(ORGANIZER, 'o:menu:withdraw');
+    expect(bot.hasButton(ORGANIZER, 'o:menu:close')).toBe(true);
+    bot.press(ORGANIZER, 'o:menu:close');
+    expect(bot.state.adminMenu).toBeNull();
+    expect(bot.state.withdrawn).toEqual([]);
+    expect(bot.hasButton(ORGANIZER, 'o:menu:tech')).toBe(true);
+  });
+
+  it('снятый игрок: текущий матч — сопернику, в будущей паре — техническое поражение', () => {
+    const bot = readyForQualifiers();
+    const draw = bot.state.draw!;
+    // Матч первого круга, победитель которого встретится с игроком, прошедшим без игры.
+    const first = draw.bracket!.rounds[0]!.find((m) => !m.isBye)!;
+    const second = draw.bracket!.rounds[1]!.find((m) => m.slots.some((s) => s.kind === 'winnerOf' && s.matchId === first.id))!;
+    const waiting = second.slots.map((slot) => resolveSlot(draw.bracket!, draw.results, slot)).find(Boolean)!;
+    const [a, b] = matchPlayers(draw, first.id)!;
+
+    // Ждущего соперника снимаем заранее: пока пары нет, результата нет.
+    bot.press(ORGANIZER, 'o:menu:withdraw');
+    bot.press(ORGANIZER, `o:withdrawPick:${waiting}`);
+    bot.press(ORGANIZER, 'o:withdrawOk');
+    expect(bot.state.withdrawn).toEqual([waiting]);
+    expect(bot.lastText(waiting)).toContain('снял тебя с турнира');
+    expect(bot.state.draw!.results[second.id]).toBeUndefined();
+
+    // Снятие игрока текущего матча закрывает его в пользу соперника, а следующая пара —
+    // с заранее снятым — закрывается сама.
+    bot.press(ORGANIZER, 'o:menu:withdraw');
+    expect(bot.hasButton(ORGANIZER, `o:withdrawPick:${waiting}`)).toBe(false);
+    bot.press(ORGANIZER, `o:withdrawPick:${a}`);
+    bot.press(ORGANIZER, 'o:withdrawOk');
+    expect(bot.state.draw!.results[first.id]).toBe(b);
+    expect(bot.state.draw!.results[second.id]).toBe(b);
+    expect(bot.allText(b)).toContain('соперник снят с турнира');
+    expect(bot.state.draw!.bracket!.rounds.at(-1)!.some((m) => bot.state.draw!.results[m.id] === b)).toBe(true);
+  });
+});
+
+describe('/matches', () => {
+  it('сбор, ожидание пар, живой матч со счётом и судьёй, сыгранные', () => {
+    const bot = new TestBot();
+    bot.register('1');
+    bot.command('1', '/matches');
+    expect(bot.lastText('1')).toContain('Идёт сбор песен');
+
+    const ready = readyForQualifiers();
+    const matchId = nextMatch(ready)!;
+    ready.command(GUEST, '/start');
+    ready.command('1', '/matches');
+    expect(ready.lastText('1')).toContain('Ждут начала');
+    expect(ready.lastText('1')).toContain('выбирают судью');
+
+    const judge = appointJudge(ready, matchId);
+    const players = matchPlayers(ready.state.draw!, matchId)!;
+    playToDecision(ready, `m:${matchId}:`, judge, players, 1);
+    ready.command('1', '/matches');
+    expect(ready.lastText('1')).toMatch(/Сейчас играют:\n🎤 №\d\.\d: .+ 2,1 : 0,0 .+ · судья /);
+
+    for (let i = 1; i < 5; i++) {
+      ready.press(judge, `m:${matchId}:issue`);
+      ready.press(judge, `m:${matchId}:start`);
+      ready.press(judge, `m:${matchId}:aw:a:0`);
+      ready.press(judge, `m:${matchId}:aw:t:0`);
+      ready.press(judge, `m:${matchId}:close`);
+    }
+    confirmAll(ready, `m:${matchId}:`, judge, players);
+    ready.command('1', '/matches');
+    expect(ready.lastText('1')).toContain('Сыграно:');
+    expect(ready.lastText('1')).toContain(`→ ${ready.state.people[players[0]]!.name}`);
+  });
+
+  it('в финале на двоих единственный матч называется «Финал»', () => {
+    const bot = readyForQualifiers();
+    for (let id = nextMatch(bot); id; id = nextMatch(bot)) playQualifier(bot, id);
+    bot.press(ORGANIZER, 'o:toFinal');
+    bot.command('1', '/matches');
+    expect(bot.lastText('1')).toContain('Финал ещё не начался');
+    bot.register(FINAL_JUDGE, 'fjudge_test');
+    bot.press(ORGANIZER, 'o:openFinal');
+    bot.command('1', '/matches');
+    expect(bot.lastText('1')).toMatch(/⏳ Финал: .+ — .+/);
   });
 });
 
