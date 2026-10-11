@@ -48,6 +48,43 @@ src/
 
 Бот — на grammY и PostgreSQL, плюс ffmpeg для аудио; тесты хранилища идут на PGlite, без сервера. Почему так — в [решениях по боту](docs/decisions/2026-10-08-telegram-bot.md) и [переходе на grammY и PostgreSQL](docs/decisions/2026-10-11-grammy-postgres.md).
 
+## Быстрый старт
+
+Как поднять бота у себя и пройти турнир на нескольких своих аккаунтах.
+
+1. **Свой тестовый бот.** В [@BotFather](https://t.me/BotFather) — `/newbot`, он выдаст токен. Бот у каждого разработчика свой: два процесса с одним токеном не работают, второй остановится с ошибкой 409. Свой Telegram ID подскажет [@userinfobot](https://t.me/userinfobot).
+2. **Настройки.** Скопировать `.env.example` в `.env` (`cp .env.example .env`) и заполнить `BOT_TOKEN` и `ORGANIZER_ID`. Для пробы на 2–4 аккаунтах поставить `FINALISTS=2` и `AUDIO_MODE=skip`: аудио не обрабатывается, ffmpeg не нужен, судья видит заглушку.
+
+3. **База и запуск** — один из вариантов.
+
+   **Docker** — Node.js и PostgreSQL ставить не нужно. В `.env` задать `POSTGRES_PASSWORD` из латинских букв и цифр.
+
+   ```bash
+   docker compose up -d --build
+   docker compose logs -f bot
+   ```
+
+   **Без Docker, macOS** — нужен Node.js 24. В `.env` указать `DATABASE_URL=postgres://localhost:5432/tournament`: PostgreSQL из Homebrew пускает пользователя macOS без пароля и слушает только localhost.
+
+   ```bash
+   brew install postgresql@17
+   brew services start postgresql@17
+   $(brew --prefix postgresql@17)/bin/createdb tournament
+   npm ci
+   npm run bot
+   ```
+
+4. **Проверка.** В логе появятся `@имя_бота` и ссылка-приглашение. Написать боту `/start` — придут панели организатора. Ссылку отправить второму аккаунту, дальше — по [пробному турниру](docs/operations.md#пробный-турнир). Остановить — Ctrl+C или `docker compose down`.
+
+Если не запускается:
+
+- «Не задан …» — не заполнена строка в `.env`.
+- «неверный BOT_TOKEN» — токен скопирован не целиком или отозван.
+- «другой процесс уже читает updates» — с этим токеном уже запущен бот, свой или чужой.
+- После запуска в логе тишина — бот не достучался до Telegram. Проверить сеть: `curl -m 10 https://api.telegram.org/` должен ответить сразу. Запускать там, где Telegram доступен.
+
+`.env` в git не попадает. Токен никому не пересылать; если утёк — `/revoke` в @BotFather, старый перестанет работать сразу.
+
 ## Разработка
 
 ```bash
