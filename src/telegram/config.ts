@@ -30,7 +30,7 @@ export function readSettings(env: Record<string, string | undefined>): BotSettin
   if (!organizerId || !/^\d+$/.test(organizerId)) throw new ConfigError('Не задан ORGANIZER_ID — Telegram ID организатора.');
   const databaseUrl = env.DATABASE_URL?.trim();
   if (!databaseUrl) {
-    throw new ConfigError('Не задан DATABASE_URL — адрес PostgreSQL, например postgres://tournament:пароль@localhost:5432/tournament.');
+    throw new ConfigError('Не задан DATABASE_URL — адрес PostgreSQL, например postgres://localhost:5432/tournament.');
   }
 
   const audioMode = (env.AUDIO_MODE ?? 'ffmpeg').trim();

@@ -64,7 +64,7 @@ src/
    docker compose logs -f bot
    ```
 
-   **Без Docker, macOS** — нужен Node.js 24. В `.env` указать `DATABASE_URL=postgres://localhost:5432/tournament`: PostgreSQL из Homebrew пускает пользователя macOS без пароля и слушает только localhost.
+   **Без Docker, macOS** — нужен Node.js 24. `DATABASE_URL` из `.env.example` уже подходит: PostgreSQL из Homebrew пускает пользователя macOS без пароля и слушает только localhost.
 
    ```bash
    brew install postgresql@17
