@@ -233,6 +233,25 @@ describe('Начало фрагмента', () => {
     expect(preview(bot)).toMatchObject({ audio: { fileId: `G-${id}@15` } });
   });
 
+  it('«Готово» оставляет фрагмент итоговой строкой без кнопок, «Послушать» снова открывает сдвиг', () => {
+    const bot = withSongs();
+    const { id } = song(bot, 1);
+    bot.press(ID, 'i:pick:listen');
+    bot.press(ID, `i:n:${id}`);
+    bot.press(ID, `i:shift:${id}:10`);
+    bot.processAudio();
+    bot.press(ID, `i:done:${id}`);
+
+    expect(preview(bot)).toMatchObject({ audio: { fileId: `G-${id}@10` } });
+    expect(preview(bot)?.text).toBe('✅ Песня 2: Группа 1-1 — Песня 1\nНачнётся с 0:10.');
+    expect(bot.buttons(ID).filter((d) => d.includes(id))).toEqual([]);
+
+    bot.press(ID, 'i:pick:listen');
+    bot.press(ID, `i:n:${id}`);
+    expect(preview(bot)?.text).toContain('Сдвинуть начало');
+    expect(bot.buttons(ID)).toContain(`i:done:${id}`);
+  });
+
   it('случайное начало: фрагмент целиком в песне, повтор событий даёт то же место', () => {
     const play = () => {
       const bot = withSongs();

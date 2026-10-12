@@ -58,6 +58,8 @@ interface UserUi {
   preview: string | null;
   // То же для сообщения с фрагментом; −1 — перенести его вниз при следующей отправке.
   previewPostedAt: number;
+  // Автор нажал «Готово»: фрагмент остаётся в чате итоговой строкой, без кнопок сдвига.
+  previewDone: boolean;
   // Сколько раз участник выбирал случайное начало: вместе с seed даёт воспроизводимый бросок.
   rolls: number;
 }
@@ -100,7 +102,16 @@ const START_FORMAT = 'Напиши время, например 1:15; 0 — с �
 const SHIFTS = [-10, -5, 5, 10];
 
 function newUi(): UserUi {
-  return { mode: { kind: 'idle' }, notice: null, activity: 0, listPostedAt: 0, preview: null, previewPostedAt: 0, rolls: 0 };
+  return {
+    mode: { kind: 'idle' },
+    notice: null,
+    activity: 0,
+    listPostedAt: 0,
+    preview: null,
+    previewPostedAt: 0,
+    previewDone: false,
+    rolls: 0,
+  };
 }
 
 export function openIntakeSession(config: IntakeSessionConfig): IntakeStep {
@@ -258,7 +269,13 @@ function handleButton(session: IntakeSession, from: UserId, data: string): Butto
     const startSec = shiftStart(target, Number(shift[2]), session.config.fragmentSec);
     if (startSec === target.startSec) return { toast: 'Дальше сдвигать некуда' };
     const intake = setStart(session.intake, target.id, startSec);
-    return { session: setUi({ ...session, intake }, from, { preview: target.id }) };
+    return { session: setUi({ ...session, intake }, from, { preview: target.id, previewDone: false }) };
+  }
+
+  const done = /^done:(\w+)$/.exec(data);
+  if (done) {
+    if (session.ui[from]!.preview !== done[1]) return { toast: 'Этот фрагмент уже не актуален' };
+    return { session: setUi(session, from, { previewDone: true }) };
   }
 
   const roll = /^random:(\w+)$/.exec(data);
@@ -289,7 +306,7 @@ function handleButton(session: IntakeSession, from: UserId, data: string): Butto
   }
   if (mode.action === 'listen') {
     return {
-      session: setUi(session, from, { mode: { kind: 'idle' }, notice: null, preview: submission.id, previewPostedAt: -1 }),
+      session: setUi(session, from, { mode: { kind: 'idle' }, notice: null, preview: submission.id, previewPostedAt: -1, previewDone: false }),
     };
   }
   const intake = remove(session.intake, submission.id);
@@ -318,6 +335,7 @@ function handleStartText(session: IntakeSession, from: UserId, submissionId: str
     notice: `Песня ${numberOf(session, from, target.id)} начнётся с ${formatClock(startSec)}.`,
     preview: target.id,
     previewPostedAt: -1,
+    previewDone: false,
   });
 }
 
@@ -334,6 +352,7 @@ function randomStart(session: IntakeSession, from: UserId, target: Submission): 
     session: setUi({ ...session, intake }, from, {
       rolls,
       preview: target.id,
+      previewDone: false,
       ...(fromPrompt && {
         mode: { kind: 'idle' },
         notice: `Песня ${numberOf(session, from, target.id)} начнётся с ${formatClock(startSec)} — выбрал случайно.`,
@@ -550,10 +569,23 @@ const PICK_PROMPT: Record<PickAction, string> = {
 
 // Фрагмент песни так, как его услышит судья, и кнопки сдвига начала.
 function renderPreview(session: IntakeSession, userId: UserId): OutgoingMessage | undefined {
-  const { preview } = session.ui[userId]!;
+  const { preview, previewDone } = session.ui[userId]!;
   const list = ordered(session, userId);
   const song = list.find((s) => s.id === preview);
   if (!song || song.rejection) return undefined;
+  const audio: OutgoingMessage['audio'] = song.gameFileId
+    ? { title: 'Трек', performer: 'Музыкальный турнир', fileId: song.gameFileId }
+    : undefined;
+
+  if (previewDone) {
+    return {
+      kind: 'message',
+      to: userId,
+      slot: 'preview',
+      text: `✅ Песня ${numberOf(session, userId, song.id)}: ${labelOf(song)}\nНачнётся с ${formatClock(song.startSec)}.`,
+      audio,
+    };
+  }
 
   const status =
     song.processing === 'pending'
@@ -573,12 +605,15 @@ function renderPreview(session: IntakeSession, userId: UserId): OutgoingMessage 
     to: userId,
     slot: 'preview',
     text: lines.join('\n'),
-    audio: song.gameFileId ? { title: 'Трек', performer: 'Музыкальный турнир', fileId: song.gameFileId } : undefined,
+    audio,
     buttons: session.closed
       ? undefined
       : [
           SHIFTS.map((d) => ({ label: d < 0 ? `−${-d} с` : `+${d} с`, data: `shift:${song.id}:${d}` })),
-          [{ label: '🎲 Случайно', data: `random:${song.id}` }],
+          [
+            { label: '🎲 Случайно', data: `random:${song.id}` },
+            { label: '✅ Готово', data: `done:${song.id}` },
+          ],
         ],
   };
 }
