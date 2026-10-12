@@ -25,20 +25,20 @@ export function technicalResult(state: TournamentState, from: UserId, payload: s
 }
 
 // Технический результат: матч закрывается, победитель проходит дальше, участникам — уведомление.
-function awardTechnical(state: TournamentState, matchId: string, winner: UserId, reason: string): Step {
+function awardTechnical(state: TournamentState, matchId: string, winner: UserId, reason: string, byOrganizer = true): Step {
   const players = matchPlayers(state.draw!, matchId)!;
   const runtime = state.matches[matchId];
   const people = runtime && !runtime.closed ? [runtime.session.config.judge.id, ...players] : players;
   const note = `технический результат: ${reason}`;
   const title = matchTitle(state, matchId);
   const closed = closeWithResult(
-    { ...state, journal: [...state.journal, `Организатор: ${title} — ${note}`] },
+    { ...state, journal: [...state.journal, `${byOrganizer ? 'Организатор: ' : ''}${title} — ${note}`] },
     matchId,
     winner,
     note,
   );
   const name = participant(state, winner).name;
-  const notices = people.map((id) => message(id, `Матч ${title} закрыт организатором: ${note}. Проходит ${name}.`));
+  const notices = people.map((id) => message(id, `Матч ${title} закрыт${byOrganizer ? ' организатором' : ''}: ${note}. Проходит ${name}.`));
   return { state: closed.state, out: [...closed.out, ...notices] };
 }
 
@@ -55,6 +55,17 @@ function withdraw(state: TournamentState, userId: UserId): Step {
   return { state: forfeits.state, out: [message(userId, '🚪 Организатор снял тебя с турнира. Спасибо за игру!'), ...forfeits.out] };
 }
 
+// Игрок сам вышел из турнира (/leave): то же, что снятие, ответ ему — в сообщении подтверждения.
+export function leaveTournament(state: TournamentState, userId: UserId): Step {
+  const next: TournamentState = {
+    ...state,
+    withdrawn: [...state.withdrawn, userId],
+    left: [...(state.left ?? []), userId],
+    journal: [...state.journal, `Вышел из турнира сам: ${participant(state, userId).name}`],
+  };
+  return forfeitWithdrawn(next);
+}
+
 // Пары, где есть снятый, закрываются в пользу соперника. Победа может открыть следующую пару
 // с другим снятым — поэтому до тех пор, пока закрывать нечего.
 export function forfeitWithdrawn(state: TournamentState): Step {
@@ -69,7 +80,9 @@ export function forfeitWithdrawn(state: TournamentState): Step {
     if (!pair) return { state: next, out };
     // Сняты оба — дальше проходит первый и проиграет технически в следующей паре.
     const winner = pair.players.find((id) => !next.withdrawn.includes(id)) ?? pair.players[0];
-    const awarded = awardTechnical(next, pair.id, winner, 'соперник снят с турнира');
+    const loser = pair.players.find((id) => id !== winner)!;
+    const self = next.left?.includes(loser) ?? false;
+    const awarded = awardTechnical(next, pair.id, winner, self ? 'соперник вышел из турнира' : 'соперник снят с турнира', !self);
     next = awarded.state;
     out.push(...awarded.out);
   }
