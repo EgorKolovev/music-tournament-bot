@@ -106,4 +106,6 @@ docker compose up -d --build   # бот на сервере
 
 Стенд публикуется на GitHub Pages из `main` (`.github/workflows/pages.yml`). Pages один раз включается в Settings → Pages → Source: GitHub Actions. На стенде только вымышленные участники и метаданные песен, аудио нет.
 
+Проверка типов, линтер и тесты запускаются на каждый пуш в `main` и `dev` и на pull request (`.github/workflows/ci.yml`). Если в Railway у сервиса бота включён Wait for CI, коммит с упавшей проверкой не деплоится.
+
 Музыкальные файлы, пользовательские данные и секреты в репозиторий не входят.
