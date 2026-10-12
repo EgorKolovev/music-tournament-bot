@@ -4,6 +4,8 @@ import { DEFAULT_INTAKE_RULES } from '../domain/submission/intake.ts';
 import { DEFAULT_FINAL_TARGET, finalPoolSize } from '../domain/submission/pools.ts';
 import { DEFAULT_DATABASE_URL } from '../storage/database.ts';
 import type { TournamentConfig } from '../tournament/tournament.ts';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // Настройки бота из переменных окружения (пример — .env.example). Параметры турнира фиксируются
 // в базе при первом запуске; organizer, админы и username бота берутся из окружения каждый раз.
@@ -50,7 +52,7 @@ export function readSettings(env: Record<string, string | undefined>): BotSettin
     databaseUrl,
     audioMode,
     serviceChatId,
-    tmpDir: env.TMP_DIR?.trim() || 'data/tmp',
+    tmpDir: join(tmpdir(), env.TMP_DIR?.trim() || 'audio'),
     ffmpegPath: env.FFMPEG_PATH?.trim() || 'ffmpeg',
     ffprobePath: env.FFPROBE_PATH?.trim() || 'ffprobe',
     tournament: {
