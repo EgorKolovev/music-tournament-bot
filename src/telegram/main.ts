@@ -88,6 +88,7 @@ async function main(): Promise<void> {
   // Обрыв простаивающего соединения не должен ронять процесс: пул откроет новое.
   pool.on('error', (error) => log.warn(`PostgreSQL: ${error.message}`));
   const store = await Store.open(pgDatabase(pool));
+  const downloadFile = createTelegramDownloader(settings.token);
 
   const abort = new AbortController();
   const worker: { loop?: WorkerLoop } = {};
@@ -96,6 +97,7 @@ async function main(): Promise<void> {
     store,
     config: { ...settings.tournament, botUsername: me.username },
     log,
+    downloadFile,
     onJobs: () => worker.loop?.kick(),
   });
   const { config } = runtime.state;
@@ -109,7 +111,7 @@ async function main(): Promise<void> {
         ? skipProcessor
         : createAudioProcessor({
             api: bot.api,
-            downloadFile: createTelegramDownloader(settings.token),
+            downloadFile,
             serviceChatId: settings.serviceChatId!,
             tmpDir: settings.tmpDir,
             // Длина фрагмента — параметр турнира, зафиксированный в базе при первом запуске.

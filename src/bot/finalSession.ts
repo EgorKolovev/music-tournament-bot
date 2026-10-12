@@ -129,7 +129,7 @@ function handleOrganizer(session: FinalSession, data: string): OrganizerResult {
     return { session: { ...session, current, journal, mode: { kind: 'idle' } }, out: scoped(matchId, opened.out) };
   }
 
-  if (data === 'kit') return { session, out: [offlineKit(session)] };
+  if (data === 'kit') return { session, out: offlineKit(session) };
 
   if (data === 'paper') {
     if (openMatches(session.bracket, session.results).length === 0) return { toast: 'Нет открытых матчей' };
@@ -222,7 +222,7 @@ function isVisible(session: FinalSession, o: Outgoing): boolean {
 
 // --- Офлайн-комплект ------------------------------------------------------------
 
-function offlineKit(session: FinalSession): OutgoingMessage {
+function offlineKit(session: FinalSession): OutgoingMessage[] {
   const played = new Set(session.played);
   const position = session.queue.findIndex((id) => !played.has(id)) + 1;
   const owners = (song: LibrarySong) =>
@@ -240,7 +240,12 @@ function offlineKit(session: FinalSession): OutgoingMessage {
     return cells.map((c) => `"${c.replace(/"/g, '""')}"`).join(';');
   });
   const csv = ['"№";"Исполнитель";"Название";"Допустимо";"Чья песня";"Статус"', ...rows].join('\n');
-  return {
+  const archiveFiles = session.queue.flatMap((id, index) => {
+    const song = session.config.library.find((s) => s.id === id)!;
+    return song.audioFileId ? [{ fileName: `${String(index + 1).padStart(3, '0')}.mp3`, fileId: song.audioFileId }] : [];
+  });
+  const missing = session.queue.length - archiveFiles.length;
+  const sheet: OutgoingMessage = {
     kind: 'message',
     to: session.config.organizer.id,
     text: [
@@ -248,11 +253,31 @@ function offlineKit(session: FinalSession): OutgoingMessage {
       '',
       `Лист судьи по очереди: ${session.queue.length} песен, продолжать с позиции ${position}.`,
       'Правило то же, что в боте: следующая по очереди, пропуская песни двух игроков на сцене и уже сыгранные.',
-      'Аудио — папка пронумерованных обезличенных фрагментов в том же порядке (в демо не входит).',
+      archiveFiles.length > 0
+        ? `Следом придут ZIP-архивы: ${archiveFiles.length} пронумерованных обезличенных MP3.`
+        : 'Аудио не нарезано — доступен только лист судьи.',
+      missing > 0 ? `Без готового MP3: ${missing}. Их нужно включать вручную с позиции из листа.` : '',
       'После восстановления связи внесите результаты кнопкой «✍️ С бумаги».',
-    ].join('\n'),
+    ]
+      .filter(Boolean)
+      .join('\n'),
     document: { fileName: 'final-judge-sheet.csv', mimeType: 'text/csv', content: csv },
   };
+  if (archiveFiles.length === 0) return [sheet];
+  return [
+    sheet,
+    {
+      kind: 'message',
+      to: session.config.organizer.id,
+      text: '🎵 Аудио финала по порядку из листа судьи.',
+      document: {
+        fileName: 'final-audio.zip',
+        mimeType: 'application/zip',
+        content: '',
+        archiveFiles,
+      },
+    },
+  ];
 }
 
 // --- Рендер ---------------------------------------------------------------------

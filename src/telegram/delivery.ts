@@ -1,5 +1,6 @@
 import { InputFile, type Api } from 'grammy';
 import type { InlineKeyboardMarkup } from 'grammy/types';
+import { zipSync } from 'fflate';
 import {
   limitViolations,
   type Button,
@@ -57,6 +58,7 @@ export interface DeliveryOptions {
   api: Api;
   slots: SlotStore;
   log: Logger;
+  downloadFile?: (filePath: string, signal?: AbortSignal) => Promise<Uint8Array>;
   sleep?: (ms: number) => Promise<void>;
   maxAttempts?: number;
 }
@@ -79,6 +81,7 @@ export class Delivery {
   private readonly api: Api;
   private readonly slots: SlotStore;
   private readonly log: Logger;
+  private readonly downloadFile?: (filePath: string, signal?: AbortSignal) => Promise<Uint8Array>;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly maxAttempts: number;
 
@@ -86,6 +89,7 @@ export class Delivery {
     this.api = options.api;
     this.slots = options.slots;
     this.log = options.log;
+    this.downloadFile = options.downloadFile;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.maxAttempts = options.maxAttempts ?? 5;
   }
@@ -174,7 +178,8 @@ export class Delivery {
       return result.message_id;
     }
     if (kind === 'document') {
-      const { fileName, content } = message.document!;
+      const { fileName, content, archiveFiles } = message.document!;
+      if (archiveFiles) return this.sendArchive(message, archiveFiles);
       // Строку InputFile принял бы за путь к файлу — передаём байты.
       const document = new InputFile(new TextEncoder().encode(content), fileName);
       const result = await this.request('sendDocument', () =>
@@ -187,6 +192,44 @@ export class Delivery {
       this.api.raw.sendMessage({ chat_id, text: text || '…', reply_markup }),
     );
     return result.message_id;
+  }
+
+  private async sendArchive(
+    message: OutgoingMessage,
+    files: { fileName: string; fileId: string }[],
+  ): Promise<number> {
+    if (!this.downloadFile) throw new Error('скачивание файлов для архива не настроено');
+
+    const parts: Uint8Array[] = [];
+    let entries: Record<string, Uint8Array> = {};
+    let bytes = 0;
+    for (const file of files) {
+      const info = await this.request('getFile', () => this.api.raw.getFile({ file_id: file.fileId }));
+      if (!info.file_path) throw new Error(`getFile без file_path для ${file.fileName}`);
+      const content = await this.request('downloadFile', () => this.downloadFile!(info.file_path!));
+      // MP3 уже сжат: level 0 быстрее и почти не меняет размер. Запас покрывает заголовки ZIP.
+      if (bytes > 0 && bytes + content.byteLength + 1024 > MAX_ARCHIVE_PART_BYTES) {
+        parts.push(zipSync(entries, { level: 0 }));
+        entries = {};
+        bytes = 0;
+      }
+      entries[file.fileName] = content;
+      bytes += content.byteLength + 256;
+    }
+    if (Object.keys(entries).length > 0) parts.push(zipSync(entries, { level: 0 }));
+
+    const base = message.document!.fileName.replace(/\.zip$/i, '');
+    let sent = 0;
+    for (const [index, part] of parts.entries()) {
+      const number = String(index + 1).padStart(2, '0');
+      const document = new InputFile(part, `${base}-${number}.zip`);
+      const caption = `${message.text}${parts.length > 1 ? `\nЧасть ${index + 1} из ${parts.length}.` : ''}`;
+      const result = await this.request('sendDocument', () =>
+        this.api.raw.sendDocument({ chat_id: message.to, document, caption: caption || undefined }),
+      );
+      sent = result.message_id;
+    }
+    return sent;
   }
 
   private async edit(known: SlotRecord, message: OutgoingMessage, kind: MessageKind): Promise<void> {
@@ -259,3 +302,6 @@ function keyboard(buttons: Button[][] | undefined): InlineKeyboardMarkup | undef
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+// Облачный Bot API принимает документы до 50 МБ; оставляем запас на multipart-запрос.
+const MAX_ARCHIVE_PART_BYTES = 45 * 1024 * 1024;

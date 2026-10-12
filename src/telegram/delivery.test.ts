@@ -1,16 +1,18 @@
 import type { InputFile } from 'grammy';
+import { unzipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import type { OutgoingMessage } from '../bot/protocol.ts';
 import { Delivery, MemorySlotStore } from './delivery.ts';
 import { FakeApi, silentLog } from './fakeApi.ts';
 
-function setup() {
+function setup(downloadFile?: (filePath: string) => Promise<Uint8Array>) {
   const api = new FakeApi();
   const sleeps: number[] = [];
   const delivery = new Delivery({
     api,
     slots: new MemorySlotStore(),
     log: silentLog,
+    downloadFile,
     sleep: async (ms) => void sleeps.push(ms),
   });
   return { api, delivery, sleeps };
@@ -138,5 +140,38 @@ describe('Delivery', () => {
     expect(api.calls[0]!.method).toBe('sendDocument');
     expect(file.filename).toBe('final.csv');
     expect(new TextDecoder().decode((await file.toRaw()) as Uint8Array)).toBe('a;b');
+  });
+
+  it('скачивает игровые файлы и отправляет ZIP с пронумерованными MP3', async () => {
+    const contents: Record<string, Uint8Array> = {
+      'files/one': new TextEncoder().encode('first'),
+      'files/two': new TextEncoder().encode('second'),
+    };
+    const { api, delivery } = setup(async (path) => contents[path]!);
+    api.replies.set('getFile', (params) => ({ file_path: `files/${String(params.file_id).toLowerCase()}` }));
+
+    await delivery.deliver([
+      {
+        kind: 'message',
+        to: '42',
+        text: 'Аудио финала',
+        document: {
+          fileName: 'final-audio.zip',
+          mimeType: 'application/zip',
+          content: '',
+          archiveFiles: [
+            { fileName: '001.mp3', fileId: 'ONE' },
+            { fileName: '002.mp3', fileId: 'TWO' },
+          ],
+        },
+      },
+    ]);
+
+    expect(api.methods()).toEqual(['getFile', 'getFile', 'sendDocument']);
+    const file = api.calls[2]!.params.document as InputFile;
+    expect(file.filename).toBe('final-audio-01.zip');
+    const archive = unzipSync((await file.toRaw()) as Uint8Array);
+    expect(new TextDecoder().decode(archive['001.mp3'])).toBe('first');
+    expect(new TextDecoder().decode(archive['002.mp3'])).toBe('second');
   });
 });

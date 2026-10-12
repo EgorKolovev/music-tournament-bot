@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { FinalSession } from '../bot/finalSession.ts';
+import { handleFinal, type FinalSession } from '../bot/finalSession.ts';
 import { limitViolations } from '../bot/protocol.ts';
 import { scoreOf } from '../domain/match/match.ts';
 import { DEMO_USERS } from './demoConfig.ts';
@@ -86,6 +86,25 @@ describe('пропал интернет', () => {
     expect(kit?.kind === 'message' && kit.document?.fileName).toBe('final-judge-sheet.csv');
     const rows = kit?.kind === 'message' ? kit.document!.content.split('\n') : [];
     expect(rows).toHaveLength(frames[1]!.session.queue.length + 1);
+  });
+
+  it('добавляет к листу ZIP-задание с аудио в том же порядке', () => {
+    const opened = engine.open().session;
+    const session = {
+      ...opened,
+      config: {
+        ...opened.config,
+        library: opened.config.library.map((song) => ({ ...song, audioFileId: `audio-${song.id}` })),
+      },
+    };
+    const step = handleFinal(session, { kind: 'button', from: session.config.organizer.id, data: 'kit' });
+    const archive = step.out.find((o) => o.kind === 'message' && o.document?.archiveFiles);
+    const files = archive?.kind === 'message' ? archive.document?.archiveFiles : undefined;
+
+    expect(files?.map((file) => file.fileName)).toEqual(
+      session.queue.map((_, index) => `${String(index + 1).padStart(3, '0')}.mp3`),
+    );
+    expect(files?.map((file) => file.fileId)).toEqual(session.queue.map((id) => `audio-${id}`));
   });
 
   it('результат с бумаги продвигает сетку и пишется в журнал', () => {

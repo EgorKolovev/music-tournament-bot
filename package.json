@@ -26,6 +26,7 @@
     "url": "git+https://github.com/EgorKolovev/music-tournament-bot.git"
   },
   "dependencies": {
+    "fflate": "^0.8.3",
     "grammy": "^1.30.0",
     "pg": "^8.13.0",
     "react": "^19.3.0",

@@ -22,6 +22,7 @@ export interface RuntimeOptions {
   store: Store;
   config: TournamentConfig;
   log: Logger;
+  downloadFile?: (filePath: string, signal?: AbortSignal) => Promise<Uint8Array>;
   timers?: Timers;
   batchQuietMs?: number;
   sleep?: (ms: number) => Promise<void>;
@@ -59,7 +60,13 @@ export class Runtime {
     this.log = options.log;
     this.now = options.now ?? Date.now;
     this.onJobs = options.onJobs ?? (() => {});
-    this.delivery = new Delivery({ api: options.api, slots: options.store, log: options.log, sleep: options.sleep });
+    this.delivery = new Delivery({
+      api: options.api,
+      slots: options.store,
+      log: options.log,
+      downloadFile: options.downloadFile,
+      sleep: options.sleep,
+    });
     this.batcher = new FileBatcher(
       (from, files) => void this.enqueue(() => this.dispatchFiles(from, files)),
       options.batchQuietMs,

@@ -31,7 +31,14 @@ export interface OutgoingMessage {
   text: string;
   audio?: AudioAttachment;
   // Файл для скачивания (sendDocument): офлайн-комплект, таблица ответов.
-  document?: { fileName: string; mimeType: string; content: string };
+  document?: {
+    fileName: string;
+    mimeType: string;
+    content: string;
+    // Telegram-адаптер скачивает эти file_id, складывает файлы в ZIP и при необходимости
+    // отправляет несколькими частями. В outbox остаются только ссылки, не байты архива.
+    archiveFiles?: { fileName: string; fileId: string }[];
+  };
   buttons?: Button[][];
 }
 
