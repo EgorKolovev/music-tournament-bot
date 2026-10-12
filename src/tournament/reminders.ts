@@ -1,6 +1,6 @@
 import { confirmedJudge, matchLabel, matchPlayers } from '../bot/drawSession.ts';
 import type { Outgoing } from '../bot/protocol.ts';
-import { DAY_MS, matchTitle, message } from './helpers.ts';
+import { DAY_MS, matchTitle, message, panelHolders } from './helpers.ts';
 import type { Step, TournamentState } from './state.ts';
 
 // Напоминания и сроки: трек без закрытия, неподтверждённый результат, срок круга.
@@ -54,12 +54,8 @@ export function tick(state: TournamentState, at: number): Step {
       }
       if (at >= deadline && next.overdueReported[round] !== iso) {
         const list = open.map((m) => `• ${matchTitle(next, m.id)}`).join('\n');
-        out.push(
-          message(
-            next.config.organizerId,
-            `⌛ Срок ${round}-го круга истёк. Без результата:\n${list}\n\nПеренесите срок кнопкой в панели или оформите неявку: /tech <матч> <номер победителя> <причина>.`,
-          ),
-        );
+        const text = `⌛ Срок ${round}-го круга истёк. Без результата:\n${list}\n\nПеренесите срок в панели, раздел «Сетка», или засчитайте техническую победу в «Матчах».`;
+        for (const id of panelHolders(next)) out.push(message(id, text));
         next = { ...next, overdueReported: { ...next.overdueReported, [round]: iso } };
       }
     });

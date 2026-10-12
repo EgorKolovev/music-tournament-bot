@@ -23,14 +23,17 @@ const TICK_MS = 15_000;
 const PUBLIC_COMMANDS = [
   { command: 'matches', description: 'Кто с кем играет' },
   { command: 'status', description: 'Где ты сейчас' },
+  { command: 'leave', description: 'Выйти из турнира' },
   { command: 'help', description: 'Что умеет бот' },
 ];
 const ADMIN_COMMANDS = [
   ...PUBLIC_COMMANDS,
+  { command: 'panel', description: 'Панель админа заново' },
+  { command: 'game', description: 'Настройки турнира' },
   { command: 'tech', description: 'Технический результат: /tech 1.3 <номер победителя> <причина>' },
   { command: 'broadcast', description: 'Сообщение всем участникам' },
 ];
-const ORGANIZER_COMMANDS = [...ADMIN_COMMANDS, { command: 'panel', description: 'Прислать панели заново' }];
+const ORGANIZER_COMMANDS = [...ADMIN_COMMANDS, { command: 'rename', description: 'Переименовать турнир: /rename <название>' }];
 
 async function setCommands(api: Api, organizerId: string, adminIds: string[]): Promise<void> {
   await api.setMyCommands(PUBLIC_COMMANDS);

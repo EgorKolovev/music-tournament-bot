@@ -105,7 +105,10 @@ async function toQualifiers(api: FakeApi, store: Store, runtime: Runtime) {
   }
   const org = user(Number(ORGANIZER), 'Орг');
   await runtime.receive(textUpdate(org, '/start'));
-  for (const action of ['o:closeIntake', 'o:toDraw', 'o:draw']) await press(api, runtime, Number(ORGANIZER), action);
+  // Разделы панели админа: «Сбор» → главный экран → «Сетка».
+  for (const action of ['o:v:intake', 'o:closeIntake', 'o:v:home', 'o:toDraw', 'o:v:bracket', 'o:draw']) {
+    await press(api, runtime, Number(ORGANIZER), action);
+  }
 }
 
 describe('Runtime на PostgreSQL (PGlite)', () => {
@@ -225,8 +228,8 @@ describe('Runtime на PostgreSQL (PGlite)', () => {
     const first = await boot(db, api);
     for (let i = 0; i < 5; i++) api.failNext('sendMessage', 502, 'Bad Gateway');
     await first.runtime.receive(textUpdate(user(1, 'Аня'), '/start t_test'));
-    // Стартовые панели организатора и карточка регистрации ждут — порядок сохраняется.
-    expect((await first.store.pendingOutbox()).map((i) => i.message.to)).toEqual([ORGANIZER, ORGANIZER, '1']);
+    // Стартовая панель организатора и карточка регистрации ждут — порядок сохраняется.
+    expect((await first.store.pendingOutbox()).map((i) => i.message.to)).toEqual([ORGANIZER, '1']);
 
     const second = await boot(db, api);
     await second.runtime.resume();

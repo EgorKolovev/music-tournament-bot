@@ -43,6 +43,17 @@ describe('Delivery', () => {
     expect(api.calls[1]!.params).toMatchObject({ message_id: 100, reply_markup: { inline_keyboard: [] } });
   });
 
+  it('кнопка-ссылка уходит как url, без callback_data', async () => {
+    const { api, delivery } = setup();
+    const write = { label: '💬 Написать', data: '', url: 'https://t.me/anna_m' };
+    await delivery.deliver([panel('карточка', { buttons: [[write], [{ label: 'Назад', data: 'o:v:players' }]] })]);
+    expect(api.calls[0]!.params).toMatchObject({
+      reply_markup: {
+        inline_keyboard: [[{ text: '💬 Написать', url: 'https://t.me/anna_m' }], [{ text: 'Назад', callback_data: 'o:v:players' }]],
+      },
+    });
+  });
+
   it('bump удаляет старое сообщение и отправляет новое вниз', async () => {
     const { api, delivery } = setup();
     await delivery.deliver([panel('список')]);

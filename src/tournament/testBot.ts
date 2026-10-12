@@ -67,6 +67,16 @@ export class TestBot {
     return this.send({ kind: 'button', from: sender(id), data });
   }
 
+  // Открыть раздел панели админа: разделы — на главном экране, из карточек — назад к списку.
+  open(id: UserId, screen: string): void {
+    const target = `o:v:${screen}`;
+    for (const back of ['o:v:matches', 'o:v:players', 'o:v:home']) {
+      if (this.hasButton(id, target) || (screen === 'home' && !this.hasButton(id, 'o:v:home'))) break;
+      if (this.hasButton(id, back)) this.press(id, back);
+    }
+    if (this.hasButton(id, target)) this.press(id, target);
+  }
+
   hasButton(id: UserId, action: string): boolean {
     return this.findButton(id, action) !== undefined;
   }

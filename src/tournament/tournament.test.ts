@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { matchPlayers } from '../bot/drawSession.ts';
+import { matchPlayers, qualifiedIds } from '../bot/drawSession.ts';
+import { admittedPlayers, isSongsOnly, readyForDraw } from '../bot/intakeSession.ts';
 import type { UserId } from '../bot/protocol.ts';
 import { openMatches, resolveSlot } from '../domain/bracket/bracket.ts';
+import { acceptedSongs } from '../domain/submission/intake.ts';
 import { formatClock } from '../shared/text.ts';
-import { ORGANIZER, sender, TestBot, violations } from './testBot.ts';
+import { ORGANIZER, sender, TestBot, testConfig, violations } from './testBot.ts';
+import type { TournamentState } from './tournament.ts';
 
 const PLAYERS = ['1', '2', '3', '4', '5'];
 const GUEST = '6';
@@ -14,10 +17,19 @@ function readyForQualifiers(bot = new TestBot()): TestBot {
   for (const id of PLAYERS) bot.register(id);
   for (const id of PLAYERS) bot.submitSongs(id, 10);
   bot.processAudio();
-  bot.press(ORGANIZER, 'o:closeIntake');
-  bot.press(ORGANIZER, 'o:toDraw');
-  bot.press(ORGANIZER, 'o:draw');
+  toDraw(bot);
   return bot;
+}
+
+// Организатор закрывает сбор, переходит к жеребьёвке и проводит её — разделами панели.
+function toDraw(bot: TestBot): void {
+  bot.open(ORGANIZER, 'intake');
+  bot.press(ORGANIZER, 'o:closeIntake');
+  bot.open(ORGANIZER, 'home');
+  bot.press(ORGANIZER, 'o:toDraw');
+  bot.open(ORGANIZER, 'bracket');
+  bot.press(ORGANIZER, 'o:draw');
+  bot.open(ORGANIZER, 'home');
 }
 
 function nextMatch(bot: TestBot): string | undefined {
@@ -82,6 +94,7 @@ describe('Турнир целиком', () => {
     bot.register(FINAL_JUDGE, 'fjudge_test');
     expect(bot.state.finalJudge?.id).toBe(FINAL_JUDGE);
     bot.press(ORGANIZER, 'o:openFinal');
+    bot.open(ORGANIZER, 'final');
     bot.press(ORGANIZER, 'o:start:f1-1');
 
     const finalists = bot.state.final!.config.finalists.map((p) => p.id) as [UserId, UserId];
@@ -89,6 +102,7 @@ describe('Турнир целиком', () => {
     confirmAll(bot, 'f:', FINAL_JUDGE, finalists);
     expect(bot.state.final!.results['f1-1']).toBe(finalists[0]);
 
+    bot.open(ORGANIZER, 'home');
     bot.press(ORGANIZER, 'o:archive');
     expect(bot.state.phase).toBe('archive');
     expect(bot.lastText(finalists[1])).toContain('Победитель');
@@ -284,9 +298,7 @@ describe('Начало фрагмента', () => {
       bot.text(s.owner, '0:30');
     }
     bot.processAudio({ cut: false });
-    bot.press(ORGANIZER, 'o:closeIntake');
-    bot.press(ORGANIZER, 'o:toDraw');
-    bot.press(ORGANIZER, 'o:draw');
+    toDraw(bot);
 
     const matchId = nextMatch(bot)!;
     const judge = appointJudge(bot, matchId);
@@ -320,6 +332,7 @@ describe('Регистрация', () => {
     const bot = new TestBot();
     bot.register(ORGANIZER);
     bot.submitSongs(ORGANIZER, 3);
+    bot.open(ORGANIZER, 'intake');
     expect(bot.hasButton(ORGANIZER, 'o:closeIntake')).toBe(true);
     expect(bot.hasButton(ORGANIZER, 'i:pick:remove')).toBe(true);
     bot.press(ORGANIZER, 'i:pick:remove');
@@ -380,6 +393,7 @@ describe('Споры и решения организатора', () => {
     expect(bot.allText(ORGANIZER)).toContain('Спор по матчу');
 
     const first = bot.state.matches[matchId]!.session.issued.map((t) => t.songId);
+    bot.press(ORGANIZER, `o:open:${matchId}`);
     bot.press(ORGANIZER, `o:replay:${matchId}`);
     const replay = bot.state.matches[matchId]!;
     expect(replay.attempt).toBe(1);
@@ -395,9 +409,11 @@ describe('Споры и решения организатора', () => {
   it('организатор оставляет результат при споре', () => {
     const { bot, matchId, players } = decided();
     bot.press(players[1], `x:dispute:${matchId}`);
+    bot.press(ORGANIZER, `o:open:${matchId}`);
     bot.press(ORGANIZER, `o:keep:${matchId}`);
     expect(bot.state.draw!.results[matchId]).toBe(players[0]);
     expect(bot.state.matches[matchId]!.closed).toBe(true);
+    expect(bot.allText(ORGANIZER)).toContain('✅ Решено.');
   });
 
   it('технический результат командой /tech', () => {
@@ -420,11 +436,12 @@ describe('Споры и решения организатора', () => {
 });
 
 describe('Инструменты организатора', () => {
-  it('техническая победа кнопками: матч → кому → подтверждение', () => {
+  it('техническая победа кнопками: матчи → матч → кому → подтверждение', () => {
     const bot = readyForQualifiers();
     const matchId = nextMatch(bot)!;
     const [a, b] = matchPlayers(bot.state.draw!, matchId)!;
-    bot.press(ORGANIZER, 'o:menu:tech');
+    bot.open(ORGANIZER, 'matches');
+    bot.press(ORGANIZER, `o:m:${matchId}`);
     bot.press(ORGANIZER, `o:techMatch:${matchId}`);
     bot.press(ORGANIZER, `o:techWin:${matchId}:${b}`);
     expect(bot.allText(ORGANIZER)).toContain('Засчитать техническую победу');
@@ -437,14 +454,17 @@ describe('Инструменты организатора', () => {
     expect(violations(bot.outLog)).toEqual([]);
   });
 
-  it('отмена закрывает меню, ничего не меняя', () => {
+  it('отмена закрывает подтверждение, ничего не меняя', () => {
     const bot = readyForQualifiers();
-    bot.press(ORGANIZER, 'o:menu:withdraw');
+    const [a] = matchPlayers(bot.state.draw!, nextMatch(bot)!)!;
+    bot.open(ORGANIZER, 'players');
+    bot.press(ORGANIZER, `o:p:${a}`);
+    bot.press(ORGANIZER, `o:withdrawPick:${a}`);
     expect(bot.hasButton(ORGANIZER, 'o:menu:close')).toBe(true);
     bot.press(ORGANIZER, 'o:menu:close');
     expect(bot.state.adminMenu).toBeNull();
     expect(bot.state.withdrawn).toEqual([]);
-    expect(bot.hasButton(ORGANIZER, 'o:menu:tech')).toBe(true);
+    expect(bot.hasButton(ORGANIZER, `o:withdrawPick:${a}`)).toBe(true);
   });
 
   it('снятый игрок: текущий матч — сопернику, в будущей паре — техническое поражение', () => {
@@ -457,7 +477,8 @@ describe('Инструменты организатора', () => {
     const [a, b] = matchPlayers(draw, first.id)!;
 
     // Ждущего соперника снимаем заранее: пока пары нет, результата нет.
-    bot.press(ORGANIZER, 'o:menu:withdraw');
+    bot.open(ORGANIZER, 'players');
+    bot.press(ORGANIZER, `o:p:${waiting}`);
     bot.press(ORGANIZER, `o:withdrawPick:${waiting}`);
     bot.press(ORGANIZER, 'o:withdrawOk');
     expect(bot.state.withdrawn).toEqual([waiting]);
@@ -466,8 +487,9 @@ describe('Инструменты организатора', () => {
 
     // Снятие игрока текущего матча закрывает его в пользу соперника, а следующая пара —
     // с заранее снятым — закрывается сама.
-    bot.press(ORGANIZER, 'o:menu:withdraw');
     expect(bot.hasButton(ORGANIZER, `o:withdrawPick:${waiting}`)).toBe(false);
+    bot.open(ORGANIZER, 'players');
+    bot.press(ORGANIZER, `o:p:${a}`);
     bot.press(ORGANIZER, `o:withdrawPick:${a}`);
     bot.press(ORGANIZER, 'o:withdrawOk');
     expect(bot.state.draw!.results[first.id]).toBe(b);
@@ -515,7 +537,8 @@ describe('/status', () => {
     expect(status(bot, ORGANIZER)).toMatch(/🎤 Матчи: сыграно 0 из 3 · идут 1 · без судьи \d/);
     expect(status(bot, ORGANIZER)).toContain('Организатору: /panel');
 
-    bot.press(ORGANIZER, 'o:menu:tech');
+    bot.open(ORGANIZER, 'matches');
+    bot.press(ORGANIZER, `o:m:${first.id}`);
     bot.press(ORGANIZER, `o:techMatch:${first.id}`);
     bot.press(ORGANIZER, `o:techWin:${first.id}:${a}`);
     bot.press(ORGANIZER, 'o:techOk');
@@ -601,6 +624,8 @@ describe('Напоминания', () => {
     }
     bot.send({ kind: 'tick' }, 11 * 60_000);
     expect(bot.lastText(players[1])).toContain('Подтвердите результат');
+    expect(bot.allText(ORGANIZER)).toContain('не подтверждён 10 минут');
+    bot.press(ORGANIZER, `o:open:${matchId}`);
     bot.press(ORGANIZER, `o:keep:${matchId}`);
     expect(bot.state.draw!.results[matchId]).toBe(players[0]);
   });
@@ -615,5 +640,288 @@ describe('Напоминания', () => {
     expect(bot.lastText(a)).toContain('последний день');
     bot.send({ kind: 'tick' }, 13 * 3600_000);
     expect(bot.lastText(ORGANIZER)).toContain('Срок 1-го круга истёк');
+  });
+});
+
+describe('Панель админа', () => {
+  const ADMIN = '950';
+  const panel = (bot: TestBot, id: UserId) => bot.chats[id]?.messages.find((m) => m.author === 'bot' && m.slot === 'o:phase');
+  const panelText = (bot: TestBot, id: UserId) => {
+    const message = panel(bot, id);
+    return message?.author === 'bot' ? message.text : '';
+  };
+
+  it('главный экран и разделы по этапам; из раздела — назад', () => {
+    const bot = new TestBot();
+    for (const id of PLAYERS) bot.register(id);
+    expect(panelText(bot, ORGANIZER)).toContain('Этап: регистрация и сбор песен');
+    expect(bot.buttons(ORGANIZER)).toEqual(['o:v:intake', 'o:v:players', 'o:v:settings']);
+
+    bot.open(ORGANIZER, 'players');
+    expect(panelText(bot, ORGANIZER)).toContain('№1 Игрок 1 @user1 · песен: 0 из 10');
+    bot.open(ORGANIZER, 'intake');
+    expect(panelText(bot, ORGANIZER)).toContain('Сбор треков');
+    expect(bot.hasButton(ORGANIZER, 'o:closeIntake')).toBe(true);
+    bot.open(ORGANIZER, 'home');
+    expect(bot.hasButton(ORGANIZER, 'o:closeIntake')).toBe(false);
+
+    // Панель — одно сообщение: переходы правят его на месте.
+    expect(bot.chats[ORGANIZER]!.messages.filter((m) => m.author === 'bot' && m.slot === 'o:phase')).toHaveLength(1);
+    expect(violations(bot.outLog)).toEqual([]);
+  });
+
+  it('у админа своя панель: свой раздел, общие действия, ответы — ему', () => {
+    const bot = new TestBot(testConfig({ adminIds: [ADMIN] }));
+    for (const id of PLAYERS) bot.register(id);
+    for (const id of PLAYERS) bot.submitSongs(id, 10);
+    bot.processAudio();
+
+    bot.command(ADMIN, '/panel');
+    expect(panelText(bot, ADMIN)).toContain('📣 Тестовый турнир');
+    bot.open(ADMIN, 'intake');
+    bot.press(ADMIN, 'o:closeIntake');
+    expect(bot.state.intake.closed).not.toBeNull();
+    // У организатора панель осталась на главном экране, но сводка обновилась.
+    expect(panelText(bot, ORGANIZER)).toContain('Допущено к жеребьёвке: 5');
+
+    bot.send({ kind: 'button', from: sender(ADMIN), data: 'o:toFinal' });
+    expect(bot.toasts.at(-1)).toEqual({ to: ADMIN, text: 'Отбор ещё не закончен' });
+    bot.command('1', '/panel');
+    expect(panelText(bot, '1')).toBe('');
+  });
+
+  it('кнопки прошлой версии значат то же самое: повтор журнала не расходится', () => {
+    const bot = readyForQualifiers();
+    const matchId = nextMatch(bot)!;
+    const [, b] = matchPlayers(bot.state.draw!, matchId)!;
+    // Нажатия из старой панели этапа — таких кнопок больше не видно, но в журнале они есть.
+    for (const data of ['o:menu:tech', `o:techMatch:${matchId}`, `o:techWin:${matchId}:${b}`, 'o:techOk']) {
+      bot.send({ kind: 'button', from: sender(ORGANIZER), data });
+    }
+    expect(bot.state.draw!.results[matchId]).toBe(b);
+    expect(bot.state.panels?.[ORGANIZER]).toBe(`match:${matchId}`);
+  });
+
+  it('снимок прошлой версии без панелей открывается на главном экране', () => {
+    const bot = readyForQualifiers();
+    const { panels: _, ...old } = bot.state;
+    bot.state = old as TournamentState;
+    bot.command(ORGANIZER, '/panel');
+    expect(bot.lastText(ORGANIZER)).toContain('Этап: отбор');
+  });
+
+  it('ник и имя из профиля обновляются; в карточке — ссылка на чат', () => {
+    const bot = new TestBot();
+    bot.register('1');
+    bot.send({ kind: 'command', from: { id: '1', name: 'Анна Миронова', username: 'anna_m' }, command: 'status', payload: '' });
+    expect(bot.state.people['1']).toMatchObject({ name: 'Игрок 1', username: 'anna_m', profileName: 'Анна Миронова' });
+
+    bot.open(ORGANIZER, 'players');
+    bot.press(ORGANIZER, 'o:p:1');
+    expect(panelText(bot, ORGANIZER)).toContain('Telegram: @anna_m · Анна Миронова');
+    const link = () => {
+      const message = panel(bot, ORGANIZER);
+      return message?.author === 'bot' ? message.buttons?.flat().find((b) => b.url) : undefined;
+    };
+    expect(link()?.url).toBe('https://t.me/anna_m');
+
+    // Без ника — имя из профиля и без ссылки: по одному ID Telegram её может не открыть.
+    bot.send({ kind: 'command', from: { id: '1', name: 'Анна Миронова' }, command: 'status', payload: '' });
+    bot.press(ORGANIZER, 'o:v:players');
+    expect(panelText(bot, ORGANIZER)).toContain('№1 Игрок 1 (без ника, в Telegram — Анна Миронова)');
+    bot.press(ORGANIZER, 'o:p:1');
+    expect(link()).toBeUndefined();
+  });
+
+  it('/rename — только организатор; /game — настройки', () => {
+    const bot = new TestBot(testConfig({ adminIds: [ADMIN] }));
+    bot.command(ORGANIZER, '/rename Осенний турнир');
+    expect(bot.state.config.title).toBe('Осенний турнир');
+    expect(panelText(bot, ORGANIZER)).toContain('📣 Осенний турнир');
+    bot.command(ORGANIZER, '/rename а');
+    expect(bot.lastText(ORGANIZER)).toContain('от 2 до 48 символов');
+    bot.command(ADMIN, '/rename Чужое');
+    expect(bot.state.config.title).toBe('Осенний турнир');
+
+    bot.command(ADMIN, '/game');
+    expect(bot.lastText(ADMIN)).toContain('Финалистов: 2');
+    expect(bot.lastText(ADMIN)).toContain('Отбор: 5 треков; исполнитель 0,9, название 1,2');
+  });
+
+  it('«Открыть в панели» из уведомления переносит панель вниз, к карточке матча', () => {
+    const bot = readyForQualifiers();
+    const matchId = nextMatch(bot)!;
+    const judge = appointJudge(bot, matchId);
+    const players = matchPlayers(bot.state.draw!, matchId)!;
+    playToDecision(bot, `m:${matchId}:`, judge, players);
+    bot.press(players[1], `x:dispute:${matchId}`);
+
+    const out = bot.press(ORGANIZER, `o:open:${matchId}`);
+    expect(out).toContainEqual(expect.objectContaining({ to: ORGANIZER, slot: 'o:phase', bump: true }));
+    expect(bot.lastText(ORGANIZER)).toContain('⚠️ Спор. Оспорил:');
+    expect(bot.hasButton(ORGANIZER, `o:keep:${matchId}`)).toBe(true);
+  });
+});
+
+describe('Только песни, без игры', () => {
+  it('песни идут в пулы, а в недобравших и в жеребьёвке такого участника нет; судить может', () => {
+    const bot = new TestBot();
+    for (const id of PLAYERS) bot.register(id);
+    bot.command(GUEST, '/start t_test');
+    bot.press(GUEST, 'r:name');
+    bot.press(GUEST, 'r:songs');
+    expect(isSongsOnly(bot.state.intake, GUEST)).toBe(true);
+    expect(bot.allText(GUEST)).toContain('Присылаешь песни, но не играешь');
+
+    for (const id of PLAYERS) bot.submitSongs(id, 10);
+    bot.submitSongs(GUEST, 4);
+    bot.processAudio();
+    bot.open(ORGANIZER, 'intake');
+    expect(bot.allText(ORGANIZER)).toContain('🎁 Только песни: Игрок 6 — 4');
+    bot.press(ORGANIZER, 'o:closeIntake');
+    // Четыре песни из десяти, но решать по нему не нужно: он не играет.
+    expect(readyForDraw(bot.state.intake)).toBe(true);
+    expect(admittedPlayers(bot.state.intake).map((p) => p.id)).toEqual(PLAYERS);
+    const own = acceptedSongs(bot.state.intake.intake).filter((song) => song.knownBy.includes(GUEST)).map((song) => song.key);
+    const { split } = bot.state.intake.closed!;
+    expect(own).toHaveLength(4);
+    expect(own.every((key) => split.main.includes(key) || split.final.includes(key))).toBe(true);
+
+    bot.open(ORGANIZER, 'home');
+    bot.press(ORGANIZER, 'o:toDraw');
+    bot.open(ORGANIZER, 'bracket');
+    bot.press(ORGANIZER, 'o:draw');
+    expect(bot.state.draw!.config.players.map((p) => p.id)).not.toContain(GUEST);
+    expect(bot.state.draw!.config.registered.some((p) => p.id === GUEST)).toBe(true);
+    bot.command(GUEST, '/status');
+    expect(bot.lastText(GUEST)).toContain('🎁 Твои песни в игре, сам ты не играешь.');
+    bot.open(ORGANIZER, 'players');
+    expect(bot.allText(ORGANIZER)).toContain('№6 Игрок 6 @user6 · 🎁 только песни');
+  });
+
+  it('передумать можно до закрытия сбора: сам — под списком песен, админ — в карточке', () => {
+    const bot = new TestBot();
+    bot.register('1');
+    bot.press('1', 'i:role:songs');
+    expect(isSongsOnly(bot.state.intake, '1')).toBe(true);
+    expect(bot.allText('1')).toContain('Ты только присылаешь песни');
+    bot.press('1', 'i:role:play');
+    expect(isSongsOnly(bot.state.intake, '1')).toBe(false);
+
+    bot.open(ORGANIZER, 'players');
+    bot.press(ORGANIZER, 'o:p:1');
+    bot.press(ORGANIZER, 'o:songsOnly:1');
+    expect(isSongsOnly(bot.state.intake, '1')).toBe(true);
+    expect(bot.hasButton('1', 'i:role:play')).toBe(true);
+    bot.press(ORGANIZER, 'o:player:1');
+    expect(isSongsOnly(bot.state.intake, '1')).toBe(false);
+
+    bot.open(ORGANIZER, 'intake');
+    bot.press(ORGANIZER, 'o:closeIntake');
+    expect(bot.hasButton('1', 'i:role:songs')).toBe(false);
+    bot.send({ kind: 'button', from: sender(ORGANIZER), data: 'o:songsOnly:1' });
+    expect(bot.toasts.at(-1)).toEqual({ to: ORGANIZER, text: 'Сбор уже закрыт' });
+    expect(isSongsOnly(bot.state.intake, '1')).toBe(false);
+  });
+
+  it('после закрытия сбора выбора нет: можно только судить', () => {
+    const bot = readyForQualifiers();
+    bot.command(GUEST, '/start t_test');
+    bot.press(GUEST, 'r:name');
+    expect(bot.hasButton(GUEST, 'r:songs')).toBe(false);
+    expect(bot.hasButton(GUEST, 'r:accept')).toBe(true);
+  });
+});
+
+describe('Выход из турнира (/leave)', () => {
+  const ADMIN = '950';
+
+  it('на сборе: песни остаются, в жеребьёвку не попадает; админам — уведомление', () => {
+    const bot = new TestBot(testConfig({ adminIds: [ADMIN] }));
+    for (const id of PLAYERS) bot.register(id);
+    bot.submitSongs('1', 10);
+    bot.processAudio();
+    bot.command('1', '/leave');
+    expect(bot.lastText('1')).toContain('Точно не играешь?');
+    bot.press('1', 'l:ok');
+    expect(isSongsOnly(bot.state.intake, '1')).toBe(true);
+    expect(bot.state.intake.intake.submissions.filter((sub) => sub.owner === '1' && !sub.rejection)).toHaveLength(10);
+    expect(bot.lastText(ADMIN)).toContain('№1 Игрок 1 больше не играет — песни остаются в турнире.');
+    expect(bot.allText(ORGANIZER)).toContain('№1 Игрок 1 больше не играет');
+    bot.command('1', '/leave');
+    expect(bot.lastText('1')).toContain('Ты и так не играешь');
+  });
+
+  it('«Остаться» на любом шаге ничего не меняет', () => {
+    const bot = readyForQualifiers();
+    const [a] = matchPlayers(bot.state.draw!, nextMatch(bot)!)!;
+    bot.command(a, '/leave');
+    bot.press(a, 'l:cancel');
+    expect(bot.allText(a)).toContain('Остаёшься в турнире');
+    expect(bot.hasButton(a, 'l:ok')).toBe(false);
+
+    bot.command(a, '/leave');
+    bot.press(a, 'l:ok');
+    bot.press(a, 'l:cancel');
+    expect(bot.state.withdrawn).toEqual([]);
+    expect(bot.hasButton(a, 'l:final')).toBe(false);
+  });
+
+  it('на отборе: текущий матч — сопернику, следующие — техническое поражение; судить можно', () => {
+    const bot = readyForQualifiers(new TestBot(testConfig({ adminIds: [ADMIN] })));
+    const matchId = nextMatch(bot)!;
+    const [a, b] = matchPlayers(bot.state.draw!, matchId)!;
+    bot.command(a, '/leave');
+    expect(bot.lastText(a)).toContain('Текущий матч засчитается сопернику');
+    bot.press(a, 'l:ok');
+    // Выход необратим — второй шаг, и до него ничего не меняется.
+    expect(bot.lastText(a)).toContain('Вернуться в турнир будет нельзя');
+    expect(bot.state.withdrawn).toEqual([]);
+    bot.press(a, 'l:final');
+
+    expect(bot.state.withdrawn).toEqual([a]);
+    expect(bot.state.left).toEqual([a]);
+    expect(bot.state.draw!.results[matchId]).toBe(b);
+    expect(bot.allText(b)).toContain('закрыт: технический результат: соперник вышел из турнира');
+    expect(bot.allText(a)).toContain('Ты вышел из турнира. Спасибо за игру!');
+    expect(bot.lastText(ADMIN)).toContain('вышел из турнира сам');
+    expect(bot.state.draw!.config.registered.some((p) => p.id === a)).toBe(true);
+
+    bot.command(a, '/status');
+    expect(bot.lastText(a)).toContain('🚪 Ты вышел из турнира.');
+    bot.command(a, '/leave');
+    expect(bot.lastText(a)).toContain('Ты уже не в турнире.');
+    bot.open(ORGANIZER, 'players');
+    expect(bot.allText(ORGANIZER)).toContain('🚪 вышел сам');
+  });
+
+  it('после перехода к жеребьёвке, но до неё — просто не попадает в сетку', () => {
+    const bot = new TestBot();
+    for (const id of PLAYERS) bot.register(id);
+    for (const id of PLAYERS) bot.submitSongs(id, 10);
+    bot.processAudio();
+    bot.open(ORGANIZER, 'intake');
+    bot.press(ORGANIZER, 'o:closeIntake');
+    bot.open(ORGANIZER, 'home');
+    bot.press(ORGANIZER, 'o:toDraw');
+
+    bot.command('5', '/leave');
+    expect(bot.lastText('5')).toContain('В жеребьёвку ты не попадёшь');
+    bot.press('5', 'l:ok');
+    bot.press('5', 'l:final');
+    bot.open(ORGANIZER, 'bracket');
+    bot.press(ORGANIZER, 'o:draw');
+    expect(bot.state.draw!.config.players.map((p) => p.id)).toEqual(['1', '2', '3', '4']);
+    expect(bot.state.withdrawn).toEqual([]);
+  });
+
+  it('финалист выходит только через организатора', () => {
+    const bot = readyForQualifiers();
+    for (let id = nextMatch(bot); id; id = nextMatch(bot)) playQualifier(bot, id);
+    bot.press(ORGANIZER, 'o:toFinal');
+    const [finalist] = qualifiedIds(bot.state.draw!);
+    bot.command(finalist!, '/leave');
+    expect(bot.lastText(finalist!)).toContain('Ты в финале');
+    expect(bot.hasButton(finalist!, 'l:ok')).toBe(false);
   });
 });

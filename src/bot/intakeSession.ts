@@ -37,6 +37,9 @@ export interface IntakeSessionConfig {
   finalPoolTarget: number;
   finalists: number;
   seed: number;
+  // Присылают песни, но не играют: их песни идут в пулы, а сами они не попадают ни в жеребьёвку,
+  // ни в недобравших. Передумать можно до закрытия сбора. В снимках прошлых версий поля нет.
+  songsOnly?: UserId[];
 }
 
 type PickAction = 'edit' | 'remove' | 'start' | 'listen';
@@ -128,19 +131,18 @@ export function openIntakeSession(config: IntakeSessionConfig): IntakeStep {
 }
 
 function welcomeMessage(session: IntakeSession, p: Participant): OutgoingMessage {
-  return {
-    kind: 'message',
-    to: p.id,
-    slot: 'welcome',
-    text: [
-      `Привет, ${p.name}! Собираем песни для турнира.`,
-      '',
-      `Пришли до ${session.config.rules.maxSubmissions} песен — пересылай пачкой, хоть все сразу, из @Music_to_you_bot или откуда удобно.`,
-      'Исполнителя и название возьму из файла; если не получится — спрошу.',
-      `Судья услышит фрагмент до ${session.config.fragmentSec} секунд — с начала песни, с места, которое выберешь сам, или со случайного.`,
-      'На отбор и финал песни разделю сам после закрытия сбора.',
-    ].join('\n'),
-  };
+  const lines = [
+    `Привет, ${p.name}! Собираем песни для турнира.`,
+    '',
+    `Пришли до ${session.config.rules.maxSubmissions} песен — пересылай пачкой, хоть все сразу, из @Music_to_you_bot или откуда удобно.`,
+    'Исполнителя и название возьму из файла; если не получится — спрошу.',
+    `Судья услышит фрагмент до ${session.config.fragmentSec} секунд — с начала песни, с места, которое выберешь сам, или со случайного.`,
+    'На отбор и финал песни разделю сам после закрытия сбора.',
+  ];
+  if (isSongsOnly(session, p.id)) {
+    lines.push('', '🎁 Ты только присылаешь песни: в жеребьёвку не попадёшь, но тебя могут позвать судить. Передумаешь — кнопка под списком.');
+  }
+  return { kind: 'message', to: p.id, slot: 'welcome', text: lines.join('\n') };
 }
 
 export function handleIntake(session: IntakeSession, input: Incoming): IntakeStep {
@@ -181,10 +183,14 @@ export function handleIntake(session: IntakeSession, input: Incoming): IntakeSte
 }
 
 // Участник зарегистрировался в боте во время сбора: получает приветствие и пустой список.
-export function joinIntake(session: IntakeSession, participant: Participant): IntakeStep {
+export function joinIntake(session: IntakeSession, participant: Participant, songsOnly = false): IntakeStep {
   if (allParticipants(session.config).some((p) => p.id === participant.id)) return { session, out: [] };
   const before = render(session);
-  const config = { ...session.config, participants: [...session.config.participants, participant] };
+  const config = {
+    ...session.config,
+    participants: [...session.config.participants, participant],
+    songsOnly: songsOnly ? [...(session.config.songsOnly ?? []), participant.id] : session.config.songsOnly,
+  };
   const ui = { ...session.ui, [participant.id]: newUi() };
   const next: IntakeSession = { ...session, config, ui };
   const step = emit(next, before);
@@ -203,16 +209,39 @@ export function acceptedCount(session: IntakeSession, userId: UserId): number {
   return submissionsOf(session.intake, userId).filter((s) => statusOf(s) === 'accepted').length;
 }
 
+export function isSongsOnly(session: IntakeSession, userId: UserId): boolean {
+  return session.config.songsOnly?.includes(userId) ?? false;
+}
+
+// Кто играет: все участники сбора, кроме тех, кто только присылает песни.
+export function playingParticipants(session: IntakeSession): Participant[] {
+  return allParticipants(session.config).filter((p) => !isSongsOnly(session, p.id));
+}
+
 export function underSubmitted(session: IntakeSession): Participant[] {
   const { maxSubmissions } = session.config.rules;
-  return allParticipants(session.config).filter((p) => acceptedCount(session, p.id) < maxSubmissions);
+  return playingParticipants(session).filter((p) => acceptedCount(session, p.id) < maxSubmissions);
 }
 
 export function admittedPlayers(session: IntakeSession): Participant[] {
   const closed = session.closed;
   if (!closed) return [];
   const short = new Set(underSubmitted(session).map((p) => p.id));
-  return allParticipants(session.config).filter((p) => !short.has(p.id) || closed.decisions[p.id] === 'admit');
+  return playingParticipants(session).filter((p) => !short.has(p.id) || closed.decisions[p.id] === 'admit');
+}
+
+// Участник сам вышел из игры (/leave): песни остаются в пулах, в жеребьёвку он не попадает.
+// Действует и после закрытия сбора — пока жеребьёвка не началась.
+export function leaveIntake(session: IntakeSession, userId: UserId): IntakeStep {
+  const before = render(session);
+  const notice = '🎁 Ты больше не играешь — присланные песни остаются в турнире.';
+  return emit(setUi(setSongsOnly(session, userId, true), userId, { mode: { kind: 'idle' }, notice }), before);
+}
+
+// Играет или только присылает песни. Пока идёт сбор — сам участник или организатор.
+function setSongsOnly(session: IntakeSession, userId: UserId, songsOnly: boolean): IntakeSession {
+  const others = (session.config.songsOnly ?? []).filter((id) => id !== userId);
+  return { ...session, config: { ...session.config, songsOnly: songsOnly ? [...others, userId] : others } };
 }
 
 export function readyForDraw(session: IntakeSession): boolean {
@@ -261,6 +290,13 @@ type ButtonResult = { session: IntakeSession } | { toast: string };
 function handleButton(session: IntakeSession, from: UserId, data: string): ButtonResult {
   if (data === 'cancel') return { session: setUi(session, from, { mode: { kind: 'idle' }, notice: null }) };
   if (data === 'randomAll') return randomAll(session, from);
+  if (data === 'role:songs' || data === 'role:play') {
+    const songsOnly = data === 'role:songs';
+    const notice = songsOnly
+      ? '🎁 Готово: присылаешь песни, но не играешь. Передумаешь — кнопка ниже.'
+      : '🎤 Готово: ты снова играешь.';
+    return { session: setUi(setSongsOnly(session, from, songsOnly), from, { mode: { kind: 'idle' }, notice }) };
+  }
 
   const shift = /^shift:(\w+):(-?\d+)$/.exec(data);
   if (shift) {
@@ -394,6 +430,12 @@ function handleOrganizer(session: IntakeSession, data: string): ButtonResult {
     const split = splitPools(acceptedSongs(session.intake), finalPoolTarget, seed);
     return { session: { ...session, closed: { split, decisions: {} } } };
   }
+  const role = /^(songsOnly|player):(.+)$/.exec(data);
+  if (role) {
+    if (session.closed) return { toast: 'Сбор уже закрыт' };
+    if (!session.config.participants.some((p) => p.id === role[2])) return { toast: 'Этого участника нет в сборе' };
+    return { session: setSongsOnly(session, role[2]!, role[1] === 'songsOnly') };
+  }
   const decision = /^(admit|exclude):(.+)$/.exec(data);
   if (decision && session.closed) {
     const [, verdict, userId] = decision;
@@ -473,8 +515,17 @@ function renderList(session: IntakeSession, userId: UserId): OutgoingMessage {
   const accepted = acceptedCount(session, userId);
   const lines: string[] = [];
 
+  const songsOnly = isSongsOnly(session, userId);
   if (session.closed) {
-    lines.push(`🔒 Сбор закрыт · принято ${accepted} из ${maxSubmissions}`, 'Дальше жеребьёвка — пару пришлю сюда.');
+    lines.push(
+      `🔒 Сбор закрыт · принято ${accepted} из ${maxSubmissions}`,
+      songsOnly ? 'Спасибо за песни! Ты не играешь, но тебя могут позвать судить.' : 'Дальше жеребьёвка — пару пришлю сюда.',
+    );
+  } else if (songsOnly) {
+    lines.push(
+      `🎁 Твои песни · принято ${accepted} из ${maxSubmissions}`,
+      'Ты только присылаешь песни — в жеребьёвку не попадёшь. Проверь названия: по ним судья засчитывает ответы.',
+    );
   } else if (accepted === maxSubmissions) {
     lines.push(`✅ Все ${maxSubmissions} песен приняты`, 'Можно менять до закрытия сбора.');
   } else {
@@ -546,7 +597,10 @@ function listButtons(
     ];
   }
   if (mode.kind === 'awaitTitle') return [[{ label: 'Отмена', data: 'cancel' }]];
-  if (list.length === 0) return undefined;
+  const role: Button = isSongsOnly(session, userId)
+    ? { label: '🎤 Всё-таки играю', data: 'role:play' }
+    : { label: '🎁 Не играю, только песни', data: 'role:songs' };
+  if (list.length === 0) return [[role]];
   return [
     [
       { label: '✏️ Исправить', data: 'pick:edit' },
@@ -557,6 +611,7 @@ function listButtons(
       { label: '🎧 Послушать', data: 'pick:listen' },
     ],
     [{ label: '🎲 Случайное начало всем', data: 'randomAll' }],
+    [role],
   ];
 }
 
@@ -622,17 +677,23 @@ function renderOrganizer(session: IntakeSession): OutgoingMessage {
   const { config, intake, closed } = session;
   const { maxSubmissions } = config.rules;
   const people = allParticipants(config);
+  const playing = playingParticipants(session);
+  const donors = people.filter((p) => isSongsOnly(session, p.id));
   const songs = acceptedSongs(intake);
   const acceptedTotal = intake.submissions.filter((s) => statusOf(s) === 'accepted').length;
-  const full = people.filter((p) => acceptedCount(session, p.id) === maxSubmissions).length;
+  const full = playing.filter((p) => acceptedCount(session, p.id) === maxSubmissions).length;
   const short = underSubmitted(session);
   const lines = [closed ? '🔒 Сбор закрыт' : '📥 Сбор треков', ''];
 
+  const who = donors.length > 0 ? ` (играют ${playing.length}, только песни ${donors.length})` : '';
   lines.push(
-    `Участников: ${people.length} · сдали все ${maxSubmissions}: ${full}`,
+    `Участников: ${people.length}${who} · сдали все ${maxSubmissions}: ${full}`,
     `Принято заявок: ${acceptedTotal} · уникальных песен: ${songs.length}` +
       (acceptedTotal > songs.length ? ` (склеено дублей: ${acceptedTotal - songs.length})` : ''),
   );
+  if (donors.length > 0) {
+    lines.push(`🎁 Только песни: ${donors.map((p) => `${p.name} — ${acceptedCount(session, p.id)}`).join(', ')}`);
+  }
 
   if (!closed) {
     const pending = intake.submissions.filter((s) => statusOf(s) === 'processing').length;

@@ -36,7 +36,9 @@ export type Phase = 'intake' | 'qualifiers' | 'final' | 'archive';
 export interface Person {
   id: UserId;
   name: string;
+  // Ник и имя из профиля Telegram — обновляются, когда человек пишет боту.
   username?: string;
+  profileName?: string;
   // Номер внутри турнира — по нему организатор указывает игрока в командах.
   number: number;
   registeredAt: number;
@@ -90,9 +92,25 @@ export interface TournamentState {
   final: FinalSession | null;
   // Сняты с турнира организатором: каждый их матч отбора — техническое поражение.
   withdrawn: UserId[];
+  // Из них вышли сами (/leave). В снимках прошлых версий поля нет.
+  left?: UserId[];
   adminMenu: AdminMenu | null;
+  // Раздел панели, открытый у каждого админа. Снимки прошлых версий поля не содержат.
+  panels?: Record<UserId, PanelScreen>;
   journal: string[];
 }
+
+// Разделы панели админа; у карточек матча и участника — id после двоеточия.
+export type PanelScreen =
+  | 'home'
+  | 'intake'
+  | 'bracket'
+  | 'matches'
+  | 'players'
+  | 'final'
+  | 'settings'
+  | `match:${string}`
+  | `player:${string}`;
 
 export interface Step {
   state: TournamentState;

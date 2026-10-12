@@ -10,25 +10,33 @@ import { ORG, type Step, type TournamentState } from './state.ts';
 
 export const DAY_MS = 24 * 60 * 60_000;
 
-export function intakeStep(state: TournamentState, input: Incoming): Step {
+// Панели этапов, которые сессии рисуют для организатора. Отдельными сообщениями они больше
+// не уходят: панель админа показывает их как разделы «Сбор», «Сетка» и «Финал».
+const SESSION_PANELS = new Set(['intake', 'draw', 'final']);
+
+export function intakeStep(state: TournamentState, input: Incoming, actor?: UserId): Step {
   const step = handleIntake(state.intake, input);
-  return { state: { ...state, intake: step.session }, out: scope(state, step.out, 'i:') };
+  return { state: { ...state, intake: step.session }, out: scope(state, step.out, 'i:', 'i:', actor) };
 }
 
 // Префикс контекста для slot и callback_data; сообщения организатора уходят ему с префиксом o:.
-export function scope(state: TournamentState, out: readonly Outgoing[], prefix: string, slotPrefix = prefix): Outgoing[] {
-  return out.map((o) => {
+// actor — админ, нажавший кнопку: ему, а не организатору, уходят ответы сессии.
+export function scope(state: TournamentState, out: readonly Outgoing[], prefix: string, slotPrefix = prefix, actor?: UserId): Outgoing[] {
+  return out.flatMap((o): Outgoing[] => {
     const toOrganizer = o.to === ORG;
-    const to = toOrganizer ? state.config.organizerId : o.to;
-    if (o.kind === 'toast') return { ...o, to };
+    if (toOrganizer && o.kind === 'message' && o.slot !== undefined && SESSION_PANELS.has(o.slot)) return [];
+    const to = toOrganizer ? (actor ?? state.config.organizerId) : o.to;
+    if (o.kind === 'toast') return [{ ...o, to }];
     const buttonPrefix = toOrganizer ? 'o:' : prefix;
     const slotScope = toOrganizer ? 'o:' : slotPrefix;
-    return {
-      ...o,
-      to,
-      slot: o.slot === undefined ? undefined : `${slotScope}${o.slot}`,
-      buttons: o.buttons?.map((row) => row.map((b) => ({ ...b, data: `${buttonPrefix}${b.data}` }))),
-    };
+    return [
+      {
+        ...o,
+        to,
+        slot: o.slot === undefined ? undefined : `${slotScope}${o.slot}`,
+        buttons: o.buttons?.map((row) => row.map((b) => ({ ...b, data: `${buttonPrefix}${b.data}` }))),
+      },
+    ];
   });
 }
 
@@ -63,6 +71,20 @@ export function isOrganizer(state: TournamentState, id: UserId): boolean {
 
 export function canAdmin(state: TournamentState, id: UserId): boolean {
   return isOrganizer(state, id) || state.config.adminIds.includes(id);
+}
+
+// Кто получает панель админа: организатор и админы из окружения.
+export function panelHolders(state: TournamentState): UserId[] {
+  const { organizerId, adminIds } = state.config;
+  return [organizerId, ...adminIds.filter((id) => id !== organizerId)];
+}
+
+// Имя в турнире человек вводит сам, поэтому рядом — ник в Telegram, а без ника — имя из профиля.
+export function whoIs(state: TournamentState, id: UserId): string {
+  const person = state.people[id];
+  if (!person) return id;
+  if (person.username) return `${person.name} @${person.username}`;
+  return person.profileName ? `${person.name} (без ника, в Telegram — ${person.profileName})` : `${person.name} (без ника)`;
 }
 
 export function matchTitle(state: TournamentState, matchId: string): string {

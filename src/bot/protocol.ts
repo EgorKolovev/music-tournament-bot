@@ -9,6 +9,8 @@ export interface Button {
   label: string;
   // Уходит в Telegram как callback_data: не длиннее 64 байт.
   data: string;
+  // Кнопка-ссылка: открывает url, нажатие боту не приходит, data не отправляется.
+  url?: string;
 }
 
 export interface AudioAttachment {
@@ -96,6 +98,7 @@ export function limitViolations(message: OutgoingMessage): string[] {
   for (const row of rows) {
     if (row.length > TELEGRAM_LIMITS.buttonsPerRow) problems.push(`кнопок в ряду ${row.length}`);
     for (const button of row) {
+      if (button.url) continue;
       const bytes = new TextEncoder().encode(button.data).length;
       if (bytes > TELEGRAM_LIMITS.callbackDataBytes) problems.push(`callback_data «${button.data}» ${bytes} байт`);
     }

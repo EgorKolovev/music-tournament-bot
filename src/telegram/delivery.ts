@@ -296,7 +296,9 @@ function canEditInPlace(known: SlotRecord, message: OutgoingMessage, kind: Messa
 
 function keyboard(buttons: Button[][] | undefined): InlineKeyboardMarkup | undefined {
   if (!buttons || buttons.length === 0) return undefined;
-  return { inline_keyboard: buttons.map((row) => row.map((b) => ({ text: b.label, callback_data: b.data }))) };
+  return {
+    inline_keyboard: buttons.map((row) => row.map((b) => (b.url ? { text: b.label, url: b.url } : { text: b.label, callback_data: b.data }))),
+  };
 }
 
 function describe(error: unknown): string {

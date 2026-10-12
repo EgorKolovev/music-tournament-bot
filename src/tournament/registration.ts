@@ -2,7 +2,7 @@ import { inviteByLink, registerPerson } from '../bot/drawSession.ts';
 import { joinIntake } from '../bot/intakeSession.ts';
 import type { Outgoing, OutgoingMessage, UserId } from '../bot/protocol.ts';
 import type { Sender } from './events.ts';
-import { isOrganizer, message, say, scope, toast } from './helpers.ts';
+import { canAdmin, message, say, scope, toast } from './helpers.ts';
 import { resendPanels } from './panels.ts';
 import { finalistIds } from './stages.ts';
 import type { PendingRegistration, Person, Step, TournamentState } from './state.ts';
@@ -19,12 +19,12 @@ export function handleStart(state: TournamentState, from: Sender, payload: strin
 
   if (!registered) {
     if (invite || judgeLink || finalJudgeLink) return startRegistration(state, from, invite ? undefined : payload);
-    if (isOrganizer(state, from.id)) return resendPanels(state);
+    if (canAdmin(state, from.id)) return resendPanels(state, from.id);
     return say(state, from.id, 'Это бот музыкального турнира. Чтобы участвовать, открой ссылку-приглашение от организатора.');
   }
   if (judgeLink) return judgeInvite(state, from.id, judgeLink[1]!);
   if (finalJudgeLink) return assignFinalJudge(state, from.id, at);
-  const panels = isOrganizer(state, from.id) ? resendPanels(state).out : [];
+  const panels = canAdmin(state, from.id) ? resendPanels(state, from.id).out : [];
   return { state, out: [message(from.id, `Ты в турнире: №${registered.number}, ${registered.name}.\n${COMMANDS_HINT}`), ...panels] };
 }
 
@@ -64,12 +64,25 @@ function registrationMessage(state: TournamentState, to: UserId, pending: Pendin
       '• Судить можно чужие матчи; песни, которые услышишь как судья, тебе потом не выпадут.',
       '',
       'Telegram ID используется только внутри турнира.',
+      ...(canChooseRole(state, pending) ? ['', 'Можно не играть, а только прислать песни: они пойдут в игру, а тебя могут позвать судить.'] : []),
     ].join('\n'),
-    buttons: [
-      [{ label: '✅ Принимаю правила', data: 'r:accept' }],
-      [{ label: '✏️ Другое имя', data: 'r:rename' }],
-    ],
+    // «Играю» — те же данные, что у прежней «Принимаю правила»: старые события значат то же.
+    buttons: canChooseRole(state, pending)
+      ? [
+          [{ label: '🎤 Играю', data: 'r:accept' }],
+          [{ label: '🎁 Только пришлю песни', data: 'r:songs' }],
+          [{ label: '✏️ Другое имя', data: 'r:rename' }],
+        ]
+      : [
+          [{ label: '✅ Принимаю правила', data: 'r:accept' }],
+          [{ label: '✏️ Другое имя', data: 'r:rename' }],
+        ],
   };
+}
+
+// Выбор есть, пока идёт сбор и человек пришёл по приглашению, а не по ссылке судьи.
+function canChooseRole(state: TournamentState, pending: PendingRegistration): boolean {
+  return state.phase === 'intake' && !state.intake.closed && !pending.payload;
 }
 
 export function registrationButton(state: TournamentState, from: Sender, data: string, at: number): Step {
@@ -82,6 +95,10 @@ export function registrationButton(state: TournamentState, from: Sender, data: s
   if (data === 'name' && pending.step === 'name') return setPending({ ...pending, step: 'rules', name: pending.suggested });
   if (data === 'rename') return setPending({ ...pending, step: 'name' });
   if (data === 'accept' && pending.step === 'rules') return register(state, from, pending, at);
+  if (data === 'songs' && pending.step === 'rules') {
+    if (!canChooseRole(state, pending)) return toast(state, from.id, 'Сбор уже закрыт');
+    return register(state, from, pending, at, true);
+  }
   return toast(state, from.id, 'Сейчас это действие недоступно');
 }
 
@@ -99,11 +116,12 @@ export function registrationText(state: TournamentState, from: Sender, text: str
   };
 }
 
-function register(state: TournamentState, from: Sender, pending: PendingRegistration, at: number): Step {
+function register(state: TournamentState, from: Sender, pending: PendingRegistration, at: number, songsOnly = false): Step {
   const person: Person = {
     id: from.id,
     name: pending.name!,
     username: pending.username,
+    profileName: pending.suggested,
     number: state.nextNumber,
     registeredAt: at,
   };
@@ -113,19 +131,23 @@ function register(state: TournamentState, from: Sender, pending: PendingRegistra
     people: { ...state.people, [person.id]: person },
     nextNumber: state.nextNumber + 1,
     registration,
-    journal: [...state.journal, `Регистрация: №${person.number} ${person.name}`],
+    journal: [...state.journal, `Регистрация: №${person.number} ${person.name}${songsOnly ? ' (только песни)' : ''}`],
   };
   const out: Outgoing[] = [
     {
       kind: 'message',
       to: person.id,
       slot: 'r:reg',
-      text: `✅ Ты в турнире «${state.config.title}»: №${person.number}, ${person.name}.\n${COMMANDS_HINT}`,
+      text: [
+        `✅ Ты в турнире «${state.config.title}»: №${person.number}, ${person.name}.`,
+        ...(songsOnly ? ['🎁 Присылаешь песни, но не играешь. Передумаешь — кнопка под списком песен, пока идёт сбор.'] : []),
+        COMMANDS_HINT,
+      ].join('\n'),
     },
   ];
 
   if (next.phase === 'intake' && !next.intake.closed && !pending.payload) {
-    const joined = joinIntake(next.intake, { id: person.id, name: person.name });
+    const joined = joinIntake(next.intake, { id: person.id, name: person.name }, songsOnly);
     next = { ...next, intake: joined.session };
     out.push(...scope(next, joined.out, 'i:'));
   } else {
