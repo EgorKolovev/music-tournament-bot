@@ -792,6 +792,14 @@ h2 {
   font-size: 15px;
 }
 
+.hero-roles {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
 .journey {
   list-style: none;
   margin: 0;
@@ -859,6 +867,34 @@ h2 {
 .notes h2 {
   font-size: 15px;
   margin-bottom: 8px;
+}
+
+/* Вкладка «Роли»: до пяти колонок — лента, которая прокручивается вбок. Под телефоном — кто это. */
+
+.chats.roles {
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(min(300px, 85vw), 1fr);
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.chats.roles .phone {
+  height: calc(100vh - 320px);
+}
+
+.role-column {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.role-note {
+  margin: 0;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 /* Узкие экраны */

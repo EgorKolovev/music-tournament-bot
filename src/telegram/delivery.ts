@@ -252,8 +252,8 @@ export class Delivery {
     if (archive.byteLength > this.maxDocumentBytes) {
       const megabytes = Math.ceil(archive.byteLength / 1024 / 1024);
       const text =
-        `📦 Копия базы в архиве весит ${megabytes} МБ — больше, чем бот может отправить в Telegram. ` +
-        'Снимите её командой npm run db:backup — docs/operations.md, «Копии от бота».';
+        `📦 Бэкап в архиве весит ${megabytes} МБ — больше, чем бот может отправить в Telegram. ` +
+        'Снимите его командой npm run db:backup — docs/operations.md, «Бэкап от бота».';
       const result = await this.request('sendMessage', () => this.api.raw.sendMessage({ chat_id: message.to, text, reply_markup }));
       return result.message_id;
     }

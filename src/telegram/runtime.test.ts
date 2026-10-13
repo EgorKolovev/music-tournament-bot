@@ -22,14 +22,14 @@ function database(): TestDatabase {
 
 // Запуск бота над базой. Повторный boot над той же базой — перезапуск процесса:
 // новый Store и Runtime, в памяти ничего не осталось.
-async function boot(db: TestDatabase = database(), api = new FakeApi()) {
+async function boot(db: TestDatabase = database(), api = new FakeApi(), config = testConfig()) {
   const store = await Store.open(db);
   let clock = Date.parse('2026-10-10T10:00:00Z');
   let jobs = 0;
   const runtime = await Runtime.create({
     api,
     store,
-    config: testConfig(),
+    config,
     log: silentLog,
     sleep: async () => {},
     now: () => (clock += 1000),
@@ -255,12 +255,24 @@ describe('Runtime на PostgreSQL (PGlite)', () => {
     expect(restarted.runtime.state.intake.intake.submissions[0]!.processing).toBe('ok');
   });
 
-  it('копия базы организатору: ZIP с тем же, что сохраняет db:backup, и из него поднимается бот', async () => {
+  it('новая версия с другими очками по умолчанию не меняет очки уже начатого турнира', async () => {
+    const db = database();
+    const legacy = { artistPoints: 9, titlePoints: 12 };
+    const base = testConfig();
+    const old = { ...base, qualifierRuleset: { ...base.qualifierRuleset, ...legacy }, finalRuleset: { ...base.finalRuleset, ...legacy } };
+    await boot(db, new FakeApi(), old);
+
+    const restarted = await boot(db);
+    expect(restarted.runtime.state.config.qualifierRuleset).toMatchObject(legacy);
+    expect(restarted.runtime.state.config.finalRuleset).toMatchObject(legacy);
+  });
+
+  it('бэкап организатору: ZIP с тем же, что сохраняет db:backup, и из него поднимается бот', async () => {
     const { api, runtime } = await boot();
     await runtime.receive(textUpdate(user(1, 'Игрок 1'), '/start t_test'));
     await press(api, runtime, 1, 'r:name');
     await press(api, runtime, 1, 'r:accept');
-    await press(api, runtime, Number(ORGANIZER), 'o:v:settings');
+    await press(api, runtime, Number(ORGANIZER), 't:list');
     await press(api, runtime, Number(ORGANIZER), 't:copy:now');
     await runtime.idle();
 

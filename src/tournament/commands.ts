@@ -2,6 +2,7 @@ import { matchLabel } from '../bot/drawSession.ts';
 import { matchTitle as finalMatchTitle } from '../bot/finalSession.ts';
 import type { UserId } from '../bot/protocol.ts';
 import { openMatches, playedMatches, playersOf, qualified } from '../domain/bracket/bracket.ts';
+import { sendBroadcast } from './broadcast.ts';
 import type { Sender } from './events.ts';
 import { canAdmin, isOrganizer, matchTitle, message, participant, say, scoreLine } from './helpers.ts';
 import { technicalResult } from './organizer.ts';
@@ -36,10 +37,11 @@ function rename(state: TournamentState, from: UserId, payload: string): Step {
   return say(next, from, `✏️ Турнир теперь называется «${next.config.title}».`);
 }
 
+// Всем участникам — то же, что «✉️ Рассылка» → «Всем участникам» в панели.
 function broadcast(state: TournamentState, from: UserId, text: string): Step {
-  if (!text.trim()) return say(state, from, 'Формат: /broadcast <текст>');
-  const out = Object.keys(state.people).map((id) => message(id, `📣 ${text.trim()}`));
-  return { state, out: [...out, message(from, `Отправлено: ${out.length}`)] };
+  if (!text.trim()) return say(state, from, 'Формат: /broadcast <текст>. Выбрать, кому писать, — в панели, «✉️ Рассылка».');
+  const sent = sendBroadcast(state, 'all', text.trim());
+  return { state: sent.state, out: [...sent.out, message(from, `Отправлено: ${sent.count}`)] };
 }
 
 function helpText(state: TournamentState, id: UserId): string {
@@ -57,7 +59,7 @@ function helpText(state: TournamentState, id: UserId): string {
       '/panel — прислать панель заново',
       '/game — настройки турнира',
       '/tech <матч> <номер победителя> <причина> — технический результат (неявка, снятие)',
-      '/broadcast <текст> — сообщение всем участникам',
+      '/broadcast <текст> — сообщение всем участникам; выбрать, кому, — «✉️ Рассылка» в панели',
     );
     if (isOrganizer(state, id)) lines.push('/rename <название> — переименовать турнир');
   }

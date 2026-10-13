@@ -96,9 +96,13 @@ describe('Турнир целиком', () => {
     bot.press(ORGANIZER, 'o:openFinal');
     bot.open(ORGANIZER, 'final');
     bot.press(ORGANIZER, 'o:start:f1-1');
+    // Два финалиста — один матч, и он сам финал, а не «четвертьфиналы».
+    expect(bot.lastText(ORGANIZER)).toContain('🏆 Финал · 2 → 1');
+    expect(bot.allText(ORGANIZER)).not.toContain('Четвертьфиналы');
 
     const finalists = bot.state.final!.config.finalists.map((p) => p.id) as [UserId, UserId];
-    playToDecision(bot, 'f:', FINAL_JUDGE, finalists);
+    // Финал до 9,0: при 2,5 за трек хватает четырёх.
+    playToDecision(bot, 'f:', FINAL_JUDGE, finalists, 4);
     confirmAll(bot, 'f:', FINAL_JUDGE, finalists);
     expect(bot.state.final!.results['f1-1']).toBe(finalists[0]);
 
@@ -557,7 +561,7 @@ describe('/status', () => {
     expect(status(bot, judge)).toMatch(/⚖️ Судишь №1\.\d: .+: ждём «Все на месте»$/m);
     expect(status(bot, ORGANIZER)).toContain('Ты организатор турнира.');
     playToDecision(bot, `m:${first.id}:`, judge, [a, b], 1);
-    expect(status(bot, b)).toMatch(/идёт, .+ 2,1 : 0,0 .+, судья /);
+    expect(status(bot, b)).toMatch(/идёт, .+ 2,5 : 0,0 .+, судья /);
     expect(status(bot, ORGANIZER)).toMatch(/🎤 Матчи: сыграно 0 из 3 · идут 1 · без судьи \d/);
     expect(status(bot, ORGANIZER)).toContain('Организатору: /panel');
 
@@ -590,7 +594,7 @@ describe('/matches', () => {
     const players = matchPlayers(ready.state.draw!, matchId)!;
     playToDecision(ready, `m:${matchId}:`, judge, players, 1);
     ready.command('1', '/matches');
-    expect(ready.lastText('1')).toMatch(/Сейчас играют:\n🎤 №\d\.\d: .+ 2,1 : 0,0 .+ · судья /);
+    expect(ready.lastText('1')).toMatch(/Сейчас играют:\n🎤 №\d\.\d: .+ 2,5 : 0,0 .+ · судья /);
 
     for (let i = 1; i < 5; i++) {
       ready.press(judge, `m:${matchId}:issue`);
@@ -679,7 +683,7 @@ describe('Панель админа', () => {
     const bot = new TestBot();
     for (const id of PLAYERS) bot.register(id);
     expect(panelText(bot, ORGANIZER)).toContain('Этап: регистрация и сбор песен');
-    expect(bot.buttons(ORGANIZER)).toEqual(['o:v:intake', 'o:v:players', 'o:v:settings', 't:list']);
+    expect(bot.buttons(ORGANIZER)).toEqual(['o:v:intake', 'o:v:players', 'o:v:broadcast', 'o:v:settings', 't:list']);
 
     bot.open(ORGANIZER, 'players');
     expect(panelText(bot, ORGANIZER)).toContain('№1 Игрок 1 @user1 · песен: 0 из 10');
@@ -769,7 +773,7 @@ describe('Панель админа', () => {
 
     bot.command(ADMIN, '/game');
     expect(bot.lastText(ADMIN)).toContain('👥 Финалистов: 2');
-    expect(bot.lastText(ADMIN)).toContain('🎯 Очки: исполнитель 0,9, название 1,2');
+    expect(bot.lastText(ADMIN)).toContain('🎯 Очки: исполнитель 1,0, название 1,5');
   });
 
   it('«Открыть в панели» из уведомления переносит панель вниз, к карточке матча', () => {
@@ -1068,13 +1072,13 @@ describe('Настройки по ходу турнира', () => {
     expect(bot.state.config.finalists).toBe(2);
 
     bot.press(ORGANIZER, 'o:set:points');
-    bot.press(ORGANIZER, 'o:set:points:1015');
-    expect(bot.state.config.qualifierRuleset).toMatchObject({ artistPoints: 10, titlePoints: 15 });
-    expect(bot.state.config.finalRuleset).toMatchObject({ artistPoints: 10, titlePoints: 15 });
+    bot.press(ORGANIZER, 'o:set:points:912');
+    expect(bot.state.config.qualifierRuleset).toMatchObject({ artistPoints: 9, titlePoints: 12 });
+    expect(bot.state.config.finalRuleset).toMatchObject({ artistPoints: 9, titlePoints: 12 });
     const matchId = nextMatch(bot)!;
     appointJudge(bot, matchId);
-    expect(bot.state.matches[matchId]!.session.config.ruleset).toMatchObject({ artistPoints: 10, titlePoints: 15 });
-    expect(panelText(bot, ORGANIZER)).toContain('🎯 Очки: исполнитель 1,0, название 1,5 · 🔒 матчи отбора уже начались');
+    expect(bot.state.matches[matchId]!.session.config.ruleset).toMatchObject({ artistPoints: 9, titlePoints: 12 });
+    expect(panelText(bot, ORGANIZER)).toContain('🎯 Очки: исполнитель 0,9, название 1,2 · 🔒 матчи отбора уже начались');
     expect(bot.hasButton(ORGANIZER, 'o:set:tracks')).toBe(false);
     expect(bot.hasButton(ORGANIZER, 'o:set:finalTo')).toBe(true);
   });
@@ -1120,9 +1124,9 @@ describe('Настройки по ходу турнира', () => {
     expect(bot.lastText(ORGANIZER)).toContain('⚙️ Настройки · Весенний кубок');
     // Новые участники видят очки из настроек, а не зашитые в текст правил.
     bot.press(ORGANIZER, 'o:set:points');
-    bot.press(ORGANIZER, 'o:set:points:1015');
+    bot.press(ORGANIZER, 'o:set:points:912');
     bot.command('1', '/start t_test');
     bot.press('1', 'r:name');
-    expect(bot.lastText('1')).toContain('Исполнитель — 1,0 балла, название — 1,5.');
+    expect(bot.lastText('1')).toContain('Исполнитель — 0,9 балла, название — 1,2.');
   });
 });

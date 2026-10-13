@@ -15,17 +15,18 @@ export interface Ruleset {
   format: MatchFormat;
 }
 
-// N подбирается на пробных матчах; ориентир — 5 или 7.
+// N подбирается на пробных матчах; ориентир — 5 или 7. Очки 1 и 1,5 — с 14 октября 2026
+// (docs/decisions/2026-10-14-points.md); турнир, начатый раньше, хранит свои.
 export const QUALIFIER_RULESET: Ruleset = {
-  artistPoints: 9,
-  titlePoints: 12,
+  artistPoints: 10,
+  titlePoints: 15,
   format: { kind: 'fixed', tracks: 5 },
 };
 
 // Регламент финала фиксируется до первого финального матча и одинаков для всех семи.
 export const FINAL_RULESET: Ruleset = {
-  artistPoints: 9,
-  titlePoints: 12,
+  artistPoints: 10,
+  titlePoints: 15,
   format: { kind: 'first_to', winThreshold: 90, trackLimit: 20 },
 };
 

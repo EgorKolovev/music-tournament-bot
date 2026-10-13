@@ -9,7 +9,7 @@ const OPEN_QUESTIONS = [
   'Длина игрового фрагмента (до 60 секунд — не проверялось)',
 ];
 
-export function Overview({ onOpen }: { onOpen: (stage: Stage) => void }) {
+export function Overview({ onOpen, onRoles }: { onOpen: (stage: Stage) => void; onRoles: () => void }) {
   return (
     <main className="overview">
       <section className="hero">
@@ -19,6 +19,15 @@ export function Overview({ onOpen }: { onOpen: (stage: Stage) => void }) {
           парам найти судью и ведёт каждый матч — от короткого отборочного до финала на сцене. Ниже — четыре этапа; каждый
           можно проиграть по готовому сценарию или пройти вручную.
         </p>
+        <div className="hero-roles">
+          <p>
+            Вкладка «👥 Роли» — весь турнир на настоящем боте: что видят организатор, админ, игрок, судья и судья финала на
+            сборе, отборе, финале и после.
+          </p>
+          <button type="button" className="primary-button" onClick={onRoles}>
+            Посмотреть роли →
+          </button>
+        </div>
       </section>
 
       <ol className="journey">

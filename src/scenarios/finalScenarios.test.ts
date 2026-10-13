@@ -36,6 +36,12 @@ describe('четвертьфиналы на сцене', () => {
   const frames = run('final-quarter');
   const last = frames.at(-1)!.session;
 
+  it('у организатора сетка на восьмерых: путь и названия кругов', () => {
+    const panel = frames.at(-1)!.chats[last.config.organizer.id]!.messages.find((m) => m.author === 'bot' && m.slot === 'final');
+    expect(panel?.author === 'bot' && panel.text).toContain('🏆 Финал · 8 → 4 → 2 → 1');
+    expect(panel?.author === 'bot' && panel.text).toContain('Четвертьфиналы');
+  });
+
   it('оба матча зафиксированы в сетке', () => {
     expect(last.results).toEqual({ 'f1-1': DEMO_USERS.p0.id, 'f1-2': expect.any(String) });
     expect(last.current).toBeNull();
@@ -48,8 +54,8 @@ describe('четвертьфиналы на сцене', () => {
       ['Аня', 'Дима'],
       ['Маша', 'Никита'],
     ];
-    const firstMatchSongs = last.played.slice(0, 5);
-    const secondMatchSongs = last.played.slice(5);
+    const firstMatchSongs = last.played.slice(0, 4);
+    const secondMatchSongs = last.played.slice(4);
     [firstMatchSongs, secondMatchSongs].forEach((songs, i) => {
       const ids = pairs[i]!.map((name) => finalists.find((p) => p.name === name)!.id);
       for (const songId of songs) {
@@ -65,14 +71,14 @@ describe('четвертьфиналы на сцене', () => {
 });
 
 describe('порог вничью', () => {
-  it('9,3 : 9,3 продолжает матч, следующий трек решает', () => {
+  it('9,5 : 9,5 продолжает матч, следующий трек решает', () => {
     const frames = run('final-threshold-tie');
     const tied = frames.find((f) => {
       const match = f.session.current?.session.match;
-      return match && match.closedTracks.length === 14;
+      return match && match.closedTracks.length === 8;
     })!;
     const match = tied.session.current!.session.match;
-    expect(scoreOf(match.closedTracks, match.ruleset)).toEqual([93, 93]);
+    expect(scoreOf(match.closedTracks, match.ruleset)).toEqual([95, 95]);
     expect(match.phase.kind).toBe('between_tracks');
     expect(frames.at(-1)!.session.results['f1-1']).not.toBe(DEMO_USERS.p0.id);
   });

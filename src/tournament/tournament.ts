@@ -3,6 +3,7 @@ import { handleFinal } from '../bot/finalSession.ts';
 import { openIntakeSession } from '../bot/intakeSession.ts';
 import type { Incoming, OutgoingMessage, UserId } from '../bot/protocol.ts';
 import { findMatch } from '../domain/bracket/bracket.ts';
+import { isAudienceKey, MAX_BROADCAST_CHARS, sendBroadcast, type AudienceKey } from './broadcast.ts';
 import { handleCommand } from './commands.ts';
 import type { Sender, StampedEvent, TournamentEvent } from './events.ts';
 import { canAdmin, intakeStep, isOrganizer, isParticipant, say, scope, toast } from './helpers.ts';
@@ -117,6 +118,10 @@ function dispatch(state: TournamentState, event: TournamentEvent, at: number): S
 function handleText(state: TournamentState, from: Sender, text: string, at: number): Step {
   if (state.registration[from.id]) return registrationText(state, from, text);
   if (isOrganizer(state, from.id) && state.panels?.[from.id] === 'rename') return renameFromPanel(state, from.id, text);
+  const waiting = state.panels?.[from.id];
+  if (canAdmin(state, from.id) && waiting?.startsWith('bc:') && isAudienceKey(waiting.slice(3))) {
+    return broadcastText(state, from.id, waiting.slice(3) as AudienceKey, text);
+  }
   if (state.phase === 'intake' && isParticipant(state, from.id)) {
     return intakeStep(state, { kind: 'text', from: from.id, text });
   }
@@ -179,7 +184,7 @@ function adminButton(state: TournamentState, actor: UserId, data: string, at: nu
 
 function organizerButton(state: TournamentState, actor: UserId, data: string, at: number): Step {
   const organizer = state.config.organizerId;
-  const nav = navigate(state, actor, data) ?? settingButton(state, actor, data);
+  const nav = navigate(state, actor, data) ?? settingButton(state, actor, data) ?? broadcastButton(state, actor, data);
   if (nav) return nav;
   if (data === 'toDraw') return openDraw(state, at);
   if (data === 'toFinal') return toFinal(state);
@@ -203,7 +208,7 @@ function organizerButton(state: TournamentState, actor: UserId, data: string, at
   return toast(state, organizer, 'Сейчас это действие недоступно');
 }
 
-const SCREENS: readonly PanelScreen[] = ['home', 'intake', 'bracket', 'matches', 'players', 'final', 'settings', 'rename'];
+const SCREENS: readonly PanelScreen[] = ['home', 'intake', 'bracket', 'matches', 'players', 'final', 'settings', 'rename', 'broadcast'];
 
 // Переходы по разделам панели: o:v:<раздел>, o:m:<матч>, o:open:<матч> (из уведомления), o:p:<участник>.
 function navigate(state: TournamentState, actor: UserId, data: string): Step | undefined {
@@ -240,6 +245,33 @@ function renameFromPanel(state: TournamentState, actor: UserId, text: string): S
   if (!renamed) return say(state, actor, 'Название — от 2 до 48 символов. Пришлите ещё раз или нажмите «Отмена» в панели.');
   // Панель ушла вверх по ленте, пока человек писал, — присылаем её внизу.
   return resendPanels({ ...renamed, panels: { ...renamed.panels, [actor]: 'settings' } }, actor);
+}
+
+// ✉️ Рассылка: o:bc:<группа> — ждать текст, o:bcSend:<группа> — отправить то, что в предпросмотре.
+function broadcastButton(state: TournamentState, actor: UserId, data: string): Step | undefined {
+  const pick = /^bc:(\w+)$/.exec(data);
+  if (pick) return isAudienceKey(pick[1]!) ? setScreen(state, actor, `bc:${pick[1]}`) : toast(state, actor, 'Кнопка устарела');
+  const send = /^bcSend:(\w+)$/.exec(data);
+  if (!send) return undefined;
+  const key = send[1]!;
+  const text = state.broadcastDrafts?.[actor];
+  // Отправляется только то, что админ видит в своём предпросмотре: двойное нажатие не отправит дважды.
+  if (!isAudienceKey(key) || !text || state.panels?.[actor] !== `bcConfirm:${key}`) return toast(state, actor, 'Кнопка устарела');
+  const sent = sendBroadcast(state, key, text);
+  if (sent.count === 0) return toast(state, actor, 'В этой группе сейчас никого — отправлять некому');
+  const { [actor]: _, ...drafts } = state.broadcastDrafts ?? {};
+  const next = { ...sent.state, broadcastDrafts: drafts, panels: { ...state.panels, [actor]: 'broadcast' as const } };
+  return { state: next, out: [...sent.out, { kind: 'toast', to: actor, text: `✉️ Отправлено: ${sent.count}` }] };
+}
+
+// Текст рассылки: проверить длину и показать предпросмотр. Панель ушла вверх по ленте — присылаем её внизу.
+function broadcastText(state: TournamentState, actor: UserId, key: AudienceKey, text: string): Step {
+  const body = text.trim();
+  if (body.length > MAX_BROADCAST_CHARS) {
+    return say(state, actor, `Длинновато: ${body.length} символов, можно до ${MAX_BROADCAST_CHARS}. Пришлите короче или нажмите «Отмена» в панели.`);
+  }
+  const drafts = { ...state.broadcastDrafts, [actor]: body };
+  return resendPanels({ ...state, broadcastDrafts: drafts, panels: { ...state.panels, [actor]: `bcConfirm:${key}` } }, actor);
 }
 
 function setScreen(state: TournamentState, actor: UserId, screen: PanelScreen): Step {

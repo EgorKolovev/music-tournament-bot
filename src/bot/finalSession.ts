@@ -284,10 +284,9 @@ function offlineKit(session: FinalSession): OutgoingMessage[] {
 
 export function renderOrganizer(session: FinalSession): OutgoingMessage {
   const { bracket, results, current } = session;
-  const lines = ['🏆 Финал · 8 → 4 → 2 → 1', `Судья финала: ${session.config.judge.name} (не участник турнира)`, ''];
-  const titles = ['Четвертьфиналы', 'Полуфиналы', 'Финал'];
+  const lines = [`🏆 Финал · ${bracketPath(bracket)}`, `Судья финала: ${session.config.judge.name} (не участник турнира)`, ''];
   bracket.rounds.forEach((round, r) => {
-    lines.push(titles[r] ?? `Круг ${r + 1}`);
+    lines.push(roundTitle(bracket.rounds.length, r));
     for (const match of round) {
       const winner = results[match.id];
       const pair = playersOf(bracket, results, match.id);
@@ -313,6 +312,19 @@ export function renderOrganizer(session: FinalSession): OutgoingMessage {
   lines.push('', '🗒 Журнал:', ...session.journal.slice(-4).map((entry) => `• ${entry}`));
 
   return { kind: 'message', to: session.config.organizer.id, slot: 'final', text: lines.join('\n'), buttons: organizerButtons(session) };
+}
+
+// Путь сетки по числу финалистов: 8 → 4 → 2 → 1, при двух — 2 → 1.
+function bracketPath(bracket: FinalSession['bracket']): string {
+  const sizes: number[] = [];
+  for (let size = (bracket.rounds[0]?.length ?? 0) * 2; size > 1; size /= 2) sizes.push(size);
+  return [...sizes, 1].join(' → ');
+}
+
+// Круги называются от конца: последний — финал, при двух финалистах он же и единственный.
+function roundTitle(rounds: number, r: number): string {
+  const fromEnd = rounds - 1 - r;
+  return ['Финал', 'Полуфиналы', 'Четвертьфиналы'][fromEnd] ?? `1/${2 ** fromEnd} финала`;
 }
 
 function organizerButtons(session: FinalSession): Button[][] | undefined {

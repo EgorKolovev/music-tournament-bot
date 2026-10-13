@@ -58,7 +58,7 @@ describe('Несколько турниров', () => {
     const panel = panelOf(bot, ORGANIZER)!;
     expect(panel.text).toContain('📣 Пробный');
     expect(panel.text).toContain(`start=t_${config.code}`);
-    expect(panel.buttons?.flat().map((b) => b.data)).toEqual(['2~o:v:intake', '2~o:v:players', '2~o:v:settings', 't:list']);
+    expect(panel.buttons?.flat().map((b) => b.data)).toEqual(['2~o:v:intake', '2~o:v:players', '2~o:v:broadcast', '2~o:v:settings', 't:list']);
     // У админа — тот же активный турнир, но без списка турниров.
     expect(panelOf(bot, ADMIN)?.text).toContain('📣 Пробный');
     bot.send({ kind: 'button', from: sender(ADMIN), data: 't:list' });
@@ -104,7 +104,7 @@ describe('Несколько турниров', () => {
     bot.press(ORGANIZER, 't:switchOk:1');
     expect(bot.bot.active).toBe(1);
     expect(bot.state.journal.at(-1)).toMatch(/^Турнир продолжен после паузы \d+ час/);
-    expect(panelOf(bot, ORGANIZER)!.buttons?.flat().map((b) => b.data)).toEqual(['o:v:intake', 'o:v:players', 'o:v:settings', 't:list']);
+    expect(panelOf(bot, ORGANIZER)!.buttons?.flat().map((b) => b.data)).toEqual(['o:v:intake', 'o:v:players', 'o:v:broadcast', 'o:v:settings', 't:list']);
 
     // Нарезка закончилась, пока №2 на паузе: результат уходит ему.
     bot.send({ kind: 'worker', results: [{ submissionId: '2~s1', ok: true, startSec: 0 }] });
@@ -160,32 +160,38 @@ function moscowMs(moscowTime: string): number {
 
 const copies = (out: Outgoing[]) => out.filter((o): o is OutgoingMessage => o.kind === 'message' && Boolean(o.document?.databaseCopy));
 
-describe('Копия базы организатору', () => {
-  it('по умолчанию выключена; строка и кнопки — только в настройках организатора', () => {
+// Бэкап — на экране «🗂 Все турниры»: в файле вся база, все турниры разом.
+function openList(bot: TestBot): void {
+  bot.open(ORGANIZER, 'home');
+  bot.press(ORGANIZER, 't:list');
+}
+
+describe('Бэкап организатору', () => {
+  it('по умолчанию ежедневный выключен; кнопки — в «🗂 Все турниры», не в настройках турнира', () => {
     const bot = new TestBot(testConfig({ adminIds: [ADMIN] }));
     bot.open(ORGANIZER, 'settings');
-    const panel = panelOf(bot, ORGANIZER)!;
-    expect(panel.text).toContain('📦 Копия базы вам: выключена');
-    expect(panel.buttons?.flat().map((b) => b.data).slice(-3)).toEqual(['t:copy:on', 't:copy:now', 'o:v:home']);
+    expect(panelOf(bot, ORGANIZER)!.text).not.toContain('Бэкап');
+    expect(bot.buttons(ORGANIZER)).not.toContain('t:copy:now');
 
-    bot.open(ADMIN, 'settings');
-    expect(panelOf(bot, ADMIN)!.text).toContain('⚙️ Настройки');
-    expect(panelOf(bot, ADMIN)!.text).not.toContain('Копия базы');
-    expect(bot.buttons(ADMIN)).not.toContain('t:copy:now');
+    openList(bot);
+    const panel = panelOf(bot, ORGANIZER)!;
+    expect(panel.text).toContain('📦 Бэкап — все турниры одним файлом вам в личку. Каждый день в 12:00 МСК: выключено.');
+    expect(panel.buttons?.flat().map((b) => b.data).slice(-4)).toEqual(['t:new', 't:copy:now', 't:copy:on', 't:close']);
+
     bot.send({ kind: 'button', from: sender(ADMIN), data: 't:copy:now' });
-    expect(bot.toasts.at(-1)).toEqual({ to: ADMIN, text: 'Копию базы получает только организатор' });
+    expect(bot.toasts.at(-1)).toEqual({ to: ADMIN, text: 'Бэкап получает только организатор' });
 
     expect(copies(tickAt(bot, '2026-10-11 12:00'))).toEqual([]);
     expect(bot.bot.copy).toBeUndefined();
   });
 
-  it('включена утром: копия в 12:00 по Москве раз в день, тихий день — без файла', () => {
+  it('включён утром: бэкап в 12:00 по Москве раз в день, тихий день — без файла', () => {
     const bot = new TestBot();
     bot.now = moscowMs('2026-10-11 10:00');
-    bot.open(ORGANIZER, 'settings');
+    openList(bot);
     bot.press(ORGANIZER, 't:copy:on');
-    expect(bot.toasts.at(-1)?.text).toBe('📦 Буду присылать копию каждый день в 12:00 МСК, первую — сегодня');
-    expect(panelOf(bot, ORGANIZER)!.text).toContain('📦 Копия базы вам: каждый день в 12:00 МСК');
+    expect(bot.toasts.at(-1)?.text).toBe('⏰ Буду присылать бэкап каждый день в 12:00 МСК, первый — сегодня');
+    expect(panelOf(bot, ORGANIZER)!.text).toContain('Каждый день в 12:00 МСК: включено.');
     expect(bot.buttons(ORGANIZER)).toContain('t:copy:off');
 
     expect(copies(tickAt(bot, '2026-10-11 11:59'))).toEqual([]);
@@ -195,10 +201,10 @@ describe('Копия базы организатору', () => {
       document: { fileName: 'tournament-20261011-120000.zip', mimeType: 'application/zip', databaseCopy: true },
       buttons: [[{ label: '🔕 Больше не присылать', data: 't:copy:stop' }]],
     });
-    expect(copy!.text).toContain('📦 Копия базы на 11 октября, 12:00 МСК');
+    expect(copy!.text).toContain('📦 Бэкап на 11 октября, 12:00 МСК');
     expect(copy!.text).toContain('Активный турнир: «Тестовый турнир», сбор');
 
-    // Второй копии за день не будет, даже если что-то произошло: это попадёт в завтрашнюю.
+    // Второго за день не будет, даже если что-то произошло: это попадёт в завтрашний.
     bot.register('1');
     expect(copies(tickAt(bot, '2026-10-11 18:00'))).toEqual([]);
     expect(copies(tickAt(bot, '2026-10-12 12:00'))).toHaveLength(1);
@@ -215,48 +221,48 @@ describe('Копия базы организатору', () => {
     expect(replayed).toEqual(bot.bot);
   });
 
-  it('включена после 12:00 — первая завтра; бот лежал в 12:00 — пришлёт после запуска', () => {
+  it('включён после 12:00 — первый завтра; бот лежал в 12:00 — пришлёт после запуска', () => {
     const bot = new TestBot();
-    bot.open(ORGANIZER, 'settings');
+    openList(bot);
     bot.press(ORGANIZER, 't:copy:on');
-    expect(bot.toasts.at(-1)?.text).toContain('первую — завтра');
+    expect(bot.toasts.at(-1)?.text).toContain('первый — завтра');
     expect(copies(tickAt(bot, '2026-10-10 20:00'))).toEqual([]);
     expect(copies(tickAt(bot, '2026-10-11 09:00'))).toEqual([]);
     const [late] = copies(tickAt(bot, '2026-10-11 15:40'));
     expect(late?.document?.fileName).toBe('tournament-20261011-154000.zip');
   });
 
-  it('«🔕 Больше не присылать» под копией выключает, панель настроек обновляется', () => {
+  it('«🔕 Больше не присылать» под бэкапом выключает, экран турниров обновляется', () => {
     const bot = new TestBot();
     bot.now = moscowMs('2026-10-11 10:00');
-    bot.open(ORGANIZER, 'settings');
+    openList(bot);
     bot.press(ORGANIZER, 't:copy:on');
     tickAt(bot, '2026-10-11 12:00');
 
     bot.press(ORGANIZER, 't:copy:stop');
-    expect(bot.toasts.at(-1)).toEqual({ to: ORGANIZER, text: '🔕 Больше не пришлю. Включить снова — в ⚙️ Настройках' });
+    expect(bot.toasts.at(-1)).toEqual({ to: ORGANIZER, text: '🔕 Больше не пришлю. Включить снова — в «🗂 Все турниры»' });
     expect(bot.bot.copy).toEqual({ daily: false });
-    expect(panelOf(bot, ORGANIZER)!.text).toContain('📦 Копия базы вам: выключена');
+    expect(panelOf(bot, ORGANIZER)!.text).toContain('Каждый день в 12:00 МСК: выключено.');
     bot.register('1');
     expect(copies(tickAt(bot, '2026-10-12 12:00'))).toEqual([]);
     bot.press(ORGANIZER, 't:copy:stop');
-    expect(bot.toasts.at(-1)?.text).toBe('Копии и так выключены');
+    expect(bot.toasts.at(-1)?.text).toBe('Ежедневный бэкап и так выключен');
   });
 
-  it('«Прислать копию сейчас» — и при выключенной; при включённой ежедневная её не повторяет', () => {
+  it('«📦 Прислать бэкап» — и при выключенном ежедневном; при включённом ежедневный его не повторяет', () => {
     const bot = new TestBot();
-    bot.open(ORGANIZER, 'settings');
+    openList(bot);
     const [now] = copies(bot.press(ORGANIZER, 't:copy:now'));
     expect(now).toMatchObject({ to: ORGANIZER, document: { databaseCopy: true } });
     expect(now!.document!.fileName).toMatch(/^tournament-20261010-1300\d{2}\.zip$/);
     expect(now!.buttons).toBeUndefined();
-    expect(bot.toasts.at(-1)?.text).toBe('📦 Собираю копию — пришлю файлом');
+    expect(bot.toasts.at(-1)?.text).toBe('📦 Собираю бэкап — пришлю файлом');
     expect(bot.bot.copy).toBeUndefined();
 
     bot.now = moscowMs('2026-10-11 10:00');
     bot.press(ORGANIZER, 't:copy:on');
     expect(copies(bot.press(ORGANIZER, 't:copy:now'))).toHaveLength(1);
-    // С разовой копии ничего не изменилось — в 12:00 файла нет.
+    // С разового бэкапа ничего не изменилось — в 12:00 файла нет.
     expect(copies(tickAt(bot, '2026-10-11 12:00'))).toEqual([]);
     bot.register('1');
     expect(copies(tickAt(bot, '2026-10-12 12:00'))).toHaveLength(1);

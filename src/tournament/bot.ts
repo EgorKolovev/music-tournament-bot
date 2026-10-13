@@ -252,22 +252,8 @@ function botPanel(bot: BotState, holder: UserId): OutgoingMessage {
   if (organizer && bot.lobby) return { kind: 'message', to: holder, slot: PANEL_SLOT, ...lobbyScreen(bot) };
   const panel = adminPanel(state, holder);
   const buttons = scopeButtons(bot.active, panel.buttons) ?? [];
-  const screen = screenOf(state, holder);
-  if (organizer && screen === 'home') buttons.push([{ label: '🗂 Все турниры', data: 't:list' }]);
-  if (organizer && screen === 'settings') return copySettings(bot, panel, buttons);
+  if (organizer && screenOf(state, holder) === 'home') buttons.push([{ label: '🗂 Все турниры', data: 't:list' }]);
   return { ...panel, buttons: buttons.length > 0 ? buttons : undefined };
-}
-
-// Копия базы — в «⚙️ Настройках» организатора: она общая для всех турниров бота. Строка и кнопки
-// встают перед «⬅️ К турниру».
-function copySettings(bot: BotState, panel: OutgoingMessage, buttons: Button[][]): OutgoingMessage {
-  const daily = bot.copy?.daily ?? false;
-  const line = daily ? '📦 Копия базы вам: каждый день в 12:00 МСК, все турниры одним файлом' : '📦 Копия базы вам: выключена';
-  const rows: Button[][] = [
-    [daily ? { label: '🔕 Не присылать копию', data: `${LOBBY}copy:off` } : { label: '📦 Присылать копию в 12:00', data: `${LOBBY}copy:on` }],
-    [{ label: '📦 Прислать копию сейчас', data: `${LOBBY}copy:now` }],
-  ];
-  return { ...panel, text: `${panel.text}\n\n${line}`, buttons: [...buttons.slice(0, -1), ...rows, ...buttons.slice(-1)] };
 }
 
 function lobbyScreen(bot: BotState): { text: string; buttons: Button[][] } {
@@ -335,7 +321,17 @@ function listScreen(bot: BotState): { text: string; buttons: Button[][] } {
     buttons.push([{ label: `${mark(bot, number)} №${number} ${title}`, data: `t:card:${number}` }]);
   });
   lines.push('', 'Активен один турнир. У остальных кнопки и ссылки не работают, пока в них не вернётесь.');
-  buttons.push([{ label: '➕ Новый турнир', data: 't:new' }], [{ label: '⬅️ К турниру', data: 't:close' }]);
+  // Бэкап — здесь, а не в настройках турнира: в файле вся база, все турниры разом.
+  const daily = bot.copy?.daily ?? false;
+  lines.push('', `📦 Бэкап — все турниры одним файлом вам в личку. Каждый день в 12:00 МСК: ${daily ? 'включено' : 'выключено'}.`);
+  buttons.push(
+    [{ label: '➕ Новый турнир', data: 't:new' }],
+    [
+      { label: '📦 Прислать бэкап', data: `${LOBBY}copy:now` },
+      daily ? { label: '🔕 Не присылать в 12:00', data: `${LOBBY}copy:off` } : { label: '⏰ Присылать в 12:00', data: `${LOBBY}copy:on` },
+    ],
+    [{ label: '⬅️ К турниру', data: 't:close' }],
+  );
   return { text: lines.join('\n'), buttons };
 }
 
@@ -369,7 +365,7 @@ function summary(bot: BotState, number: number): string {
 
 function lobbyButton(bot: BotState, actor: UserId, data: string, at: number): Routed {
   const copy = data.startsWith('copy:');
-  if (!isOrganizer(activeTournament(bot), actor)) return toast(bot, actor, copy ? 'Копию базы получает только организатор' : 'Турнирами управляет организатор');
+  if (!isOrganizer(activeTournament(bot), actor)) return toast(bot, actor, copy ? 'Бэкап получает только организатор' : 'Турнирами управляет организатор');
   if (copy) return copyButton(bot, actor, data.slice('copy:'.length), at);
   const show =(lobby: LobbyScreen | undefined): Routed => ({ state: { ...bot, lobby, draftTitle: undefined }, out: [], bumped: new Set() });
   if (data === 'list') return show('list');
@@ -453,28 +449,28 @@ function hash32(text: string): number {
   return h >>> 0;
 }
 
-// --- Копия базы: t:copy:<действие>, только организатор ----------------------------------------
+// --- Бэкап, то есть копия базы: t:copy:<действие>, только организатор -------------------------
 
-// on и off — в «⚙️ Настройках», stop — под присланной копией, now — разовая копия, хоть и при выключенной.
+// now, on и off — в «🗂 Все турниры», stop — под присланным бэкапом. now работает и при выключенном ежедневном.
 function copyButton(bot: BotState, actor: UserId, action: string, at: number): Routed {
   const copy = bot.copy ?? { daily: false };
   if (action === 'now') {
     // Разовая копия тоже копия: если до 12:00 ничего не изменится, ежедневная её не повторит.
     const state = copy.daily ? { ...bot, copy: { ...copy, changed: false } } : bot;
-    const out: Outgoing[] = [copyMessage(bot, actor, at, false), { kind: 'toast', to: actor, text: '📦 Собираю копию — пришлю файлом' }];
+    const out: Outgoing[] = [copyMessage(bot, actor, at, false), { kind: 'toast', to: actor, text: '📦 Собираю бэкап — пришлю файлом' }];
     return { state, out, bumped: new Set() };
   }
   if (action === 'on') {
-    if (copy.daily) return toast(bot, actor, 'Копия и так включена');
-    // После 12:00 сегодняшняя уже не придёт: первая — завтра. Сейчас — кнопкой «Прислать копию сейчас».
+    if (copy.daily) return toast(bot, actor, 'Ежедневный бэкап и так включён');
+    // После 12:00 сегодняшний уже не придёт: первый — завтра. Сейчас — кнопкой «Прислать бэкап».
     const { day, hour } = moscow(at);
     const late = hour >= COPY_HOUR;
     const next: DatabaseCopy = { daily: true, day: late ? day : undefined, changed: true };
-    return toast({ ...bot, copy: next }, actor, `📦 Буду присылать копию каждый день в 12:00 МСК, первую — ${late ? 'завтра' : 'сегодня'}`);
+    return toast({ ...bot, copy: next }, actor, `⏰ Буду присылать бэкап каждый день в 12:00 МСК, первый — ${late ? 'завтра' : 'сегодня'}`);
   }
   if (action === 'off' || action === 'stop') {
-    if (!copy.daily) return toast(bot, actor, 'Копии и так выключены');
-    const text = action === 'stop' ? '🔕 Больше не пришлю. Включить снова — в ⚙️ Настройках' : '🔕 Копии выключены';
+    if (!copy.daily) return toast(bot, actor, 'Ежедневный бэкап и так выключен');
+    const text = action === 'stop' ? '🔕 Больше не пришлю. Включить снова — в «🗂 Все турниры»' : '🔕 Ежедневный бэкап выключен';
     return toast({ ...bot, copy: { daily: false } }, actor, text);
   }
   return toast(bot, actor, 'Кнопка устарела');
@@ -508,11 +504,11 @@ function copyMessage(bot: BotState, to: UserId, at: number, daily: boolean): Out
   const active = activeTournament(bot);
   const others = bot.tournaments.length - 1;
   const lines = [
-    `📦 Копия базы на ${formatDate(day)}, ${time} МСК`,
+    `📦 Бэкап на ${formatDate(day)}, ${time} МСК`,
     `Активный турнир: «${active.config.title}», ${PHASE_NAME[active.phase]}` +
       (others > 0 ? `; ещё ${others} ${plural(others, 'турнир', 'турнира', 'турниров')} в этом же файле` : ''),
     'Песни — ссылками Telegram, без mp3: восстанавливать в этого же бота.',
-    'Как восстановить — docs/operations.md, «Копии от бота».',
+    'Как восстановить — docs/operations.md, «Бэкап от бота».',
   ];
   return {
     kind: 'message',

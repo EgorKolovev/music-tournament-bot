@@ -10,6 +10,12 @@ import {
 } from './match.ts';
 import { FINAL_RULESET, QUALIFIER_RULESET, type Ruleset } from './ruleset.ts';
 
+// Арифметика сценариев ниже — на очках 0,9 и 1,2: движку значения безразличны, а 0,9 и 1,2 остаются
+// вариантом настройки «🎯 Очки». По умолчанию — 1 и 1,5 (последний тест).
+const LEGACY_POINTS = { artistPoints: 9, titlePoints: 12 };
+const FINAL: Ruleset = { ...FINAL_RULESET, ...LEGACY_POINTS };
+const QUALIFIER: Ruleset = { ...QUALIFIER_RULESET, ...LEGACY_POINTS };
+
 function run(state: MatchState, ...commands: MatchCommand[]): MatchState {
   for (const command of commands) {
     const result = applyCommand(state, command);
@@ -19,7 +25,7 @@ function run(state: MatchState, ...commands: MatchCommand[]): MatchState {
   return state;
 }
 
-function readyMatch(ruleset: Ruleset = FINAL_RULESET): MatchState {
+function readyMatch(ruleset: Ruleset = FINAL): MatchState {
   return run(
     createMatch(ruleset),
     { type: 'markReady', who: 'judge' },
@@ -49,7 +55,7 @@ function winnerOf(state: MatchState): PlayerSlot | undefined {
 
 describe('лобби', () => {
   it('матч начинается, только когда готовы судья и оба игрока', () => {
-    let state = run(createMatch(FINAL_RULESET), { type: 'markReady', who: 0 }, { type: 'markReady', who: 'judge' });
+    let state = run(createMatch(FINAL), { type: 'markReady', who: 0 }, { type: 'markReady', who: 'judge' });
     expect(state.phase.kind).toBe('lobby');
     state = run(state, { type: 'markReady', who: 1 });
     expect(state.phase.kind).toBe('between_tracks');
@@ -173,7 +179,7 @@ describe('завершение матча', () => {
 
 describe('короткий отбор на N треков', () => {
   it('матч не заканчивается досрочно, даже при большом отрыве', () => {
-    let state = playTracks(readyMatch(QUALIFIER_RULESET), 4, { artist: 0, title: 0 });
+    let state = playTracks(readyMatch(QUALIFIER), 4, { artist: 0, title: 0 });
     expect(liveScore(state)).toEqual([84, 0]);
     expect(state.phase.kind).toBe('between_tracks');
     state = playTrack(state, {});
@@ -182,7 +188,7 @@ describe('короткий отбор на N треков', () => {
 
   it('ничья 2,1 : 2,1 после N треков решается дополнительными треками', () => {
     // 0,9 + 1,2 против 1,2 + 0,9 — пример из разбора механики.
-    let state = playTrack(readyMatch(QUALIFIER_RULESET), { artist: 0, title: 1 });
+    let state = playTrack(readyMatch(QUALIFIER), { artist: 0, title: 1 });
     state = playTrack(state, { artist: 1, title: 0 });
     state = playTracks(state, 3, {});
     expect(liveScore(state)).toEqual([21, 21]);
@@ -196,7 +202,7 @@ describe('короткий отбор на N треков', () => {
 
 describe('нехватка песен', () => {
   it('матч останавливается только между треками и только по исчерпанию песен', () => {
-    const state = readyMatch(QUALIFIER_RULESET);
+    const state = readyMatch(QUALIFIER);
     expect(applyCommand(run(state, { type: 'issueTrack', songId: 'x' }), { type: 'suspend', reason: 'songs_exhausted' })).toEqual({
       ok: false,
       error: 'wrong_phase',
@@ -213,5 +219,14 @@ describe('пауза', () => {
     const state = run(readyMatch(), { type: 'issueTrack', songId: 'x' }, { type: 'pause' });
     expect(applyCommand(state, { type: 'startTrack' })).toEqual({ ok: false, error: 'paused' });
     expect(run(state, { type: 'resume' }, { type: 'startTrack' }).phase.kind).toBe('track');
+  });
+});
+
+describe('очки по умолчанию', () => {
+  it('1 за исполнителя и 1,5 за название — в отборе и в финале', () => {
+    for (const ruleset of [QUALIFIER_RULESET, FINAL_RULESET]) {
+      const state = playTrack(readyMatch(ruleset), { artist: 0, title: 1 });
+      expect(liveScore(state)).toEqual([10, 15]);
+    }
   });
 });

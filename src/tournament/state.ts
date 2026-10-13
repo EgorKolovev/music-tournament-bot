@@ -97,11 +97,14 @@ export interface TournamentState {
   adminMenu: AdminMenu | null;
   // Раздел панели, открытый у каждого админа. Снимки прошлых версий поля не содержат.
   panels?: Record<UserId, PanelScreen>;
+  // Текст рассылки, который админ прислал и ещё не отправил, — по админу.
+  broadcastDrafts?: Record<UserId, string>;
   journal: string[];
 }
 
 // Разделы панели админа; у карточек матча и участника — id после двоеточия. rename и setting:<ключ> —
-// только у организатора: на rename бот ждёт новое название текстом.
+// только у организатора: на rename бот ждёт новое название текстом. broadcast — рассылка:
+// bc:<группа> ждёт текст, bcConfirm:<группа> — предпросмотр перед отправкой.
 export type PanelScreen =
   | 'home'
   | 'intake'
@@ -111,9 +114,12 @@ export type PanelScreen =
   | 'final'
   | 'settings'
   | 'rename'
+  | 'broadcast'
   | `match:${string}`
   | `player:${string}`
-  | `setting:${string}`;
+  | `setting:${string}`
+  | `bc:${string}`
+  | `bcConfirm:${string}`;
 
 export interface Step {
   state: TournamentState;

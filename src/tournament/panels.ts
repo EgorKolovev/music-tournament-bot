@@ -3,6 +3,7 @@ import { renderOrganizer as renderFinalOrganizer } from '../bot/finalSession.ts'
 import { acceptedCount, admittedPlayers, isSongsOnly, readyForDraw, render as renderIntake } from '../bot/intakeSession.ts';
 import type { Button, OutgoingMessage, UserId } from '../bot/protocol.ts';
 import { findMatch, openMatches, playedMatches, qualified } from '../domain/bracket/bracket.ts';
+import { audienceScreen, broadcastScreen, confirmScreen, isAudienceKey, type AudienceKey } from './broadcast.ts';
 import { hasLeft, isoDate, isOrganizer, isParticipant, matchTitle, panelHolders, participant, scoreLine, whoIs } from './helpers.ts';
 import { techCandidates, withdrawCandidates } from './organizer.ts';
 import { isSettingKey, lockReason, SETTING_KEYS, settingChoice, settingLine, settingName } from './settings.ts';
@@ -102,6 +103,13 @@ export function screenOf(state: TournamentState, holder: UserId): PanelScreen {
   // Менять настройки и название может только организатор.
   if (saved === 'rename') return isOrganizer(state, holder) ? saved : 'settings';
   if (saved.startsWith('setting:')) return isOrganizer(state, holder) && isSettingKey(saved.slice(8)) ? saved : 'settings';
+  // Предпросмотр без текста — назад к ожиданию текста; неизвестная группа — к выбору группы.
+  if (saved.startsWith('bc:')) return isAudienceKey(saved.slice(3)) ? saved : 'broadcast';
+  if (saved.startsWith('bcConfirm:')) {
+    const key = saved.slice(10);
+    if (!isAudienceKey(key)) return 'broadcast';
+    return state.broadcastDrafts?.[holder] ? saved : `bc:${key}`;
+  }
   return saved;
 }
 
@@ -109,6 +117,8 @@ function screen(state: TournamentState, current: PanelScreen, holder: UserId): S
   if (current.startsWith('match:')) return matchScreen(state, current.slice(6));
   if (current.startsWith('player:')) return playerScreen(state, current.slice(7));
   if (current.startsWith('setting:')) return settingScreen(state, current.slice(8));
+  if (current.startsWith('bc:')) return audienceScreen(state, current.slice(3) as AudienceKey);
+  if (current.startsWith('bcConfirm:')) return confirmScreen(state, current.slice(10) as AudienceKey, state.broadcastDrafts?.[holder] ?? '');
   switch (current) {
     case 'intake':
       return withBack(sessionPanel(renderIntake(state.intake), 'intake'));
@@ -124,6 +134,8 @@ function screen(state: TournamentState, current: PanelScreen, holder: UserId): S
       return settingsScreen(state, holder);
     case 'rename':
       return renameScreen(state);
+    case 'broadcast':
+      return broadcastScreen(state);
     default:
       return homeScreen(state);
   }
@@ -217,7 +229,10 @@ function homeScreen(state: TournamentState): Screen {
       break;
     }
   }
-  buttons.push([{ label: '⚙️ Настройки', data: 'o:v:settings' }]);
+  buttons.push([
+    { label: '✉️ Рассылка', data: 'o:v:broadcast' },
+    { label: '⚙️ Настройки', data: 'o:v:settings' },
+  ]);
   return { text: lines.join('\n'), buttons };
 }
 

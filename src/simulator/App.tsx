@@ -6,6 +6,7 @@ import type { MatchSession } from '../bot/matchSession.ts';
 import type { Incoming } from '../bot/protocol.ts';
 import { DEMO_USERS } from '../scenarios/demoConfig.ts';
 import { ALL_PEOPLE } from '../scenarios/engines.ts';
+import { MOMENTS, type MomentId } from '../scenarios/rolesStory.ts';
 import { initialFrame, nextFrame, runScenario, type Frame } from '../scenarios/runner.ts';
 import { ChatColumn } from './ChatColumn.tsx';
 import { DrawInspector } from './DrawInspector.tsx';
@@ -13,6 +14,7 @@ import { FinalInspector } from './FinalInspector.tsx';
 import { IntakeInspector } from './IntakeInspector.tsx';
 import { Inspector } from './Inspector.tsx';
 import { Overview } from './Overview.tsx';
+import { RolesView } from './RolesView.tsx';
 import { STAGES, stageById, type Stage } from './stages.ts';
 
 const PLAY_INTERVAL_MS = 450;
@@ -25,11 +27,19 @@ interface Location {
   scenarioId: string;
   // Шаг, с которого открыть сценарий: номер или end.
   at?: string;
+  // Вкладка «Роли» и её момент: #roles/qualifiers.
+  roles?: MomentId;
 }
+
+const ROLES = 'roles';
 
 // Адрес вида #final/final-offline/end открывает нужный сценарий сразу — удобно на презентации.
 function readHash(): Location {
   const [stageId, scenarioId, at] = window.location.hash.replace(/^#/, '').split('/');
+  if (stageId === ROLES) {
+    const moment = MOMENTS.find((m) => m.id === scenarioId) ?? MOMENTS[0]!;
+    return { stage: null, scenarioId: '', roles: moment.id };
+  }
   const stage = stageById(stageId ?? '') ?? null;
   if (!stage) return { stage: null, scenarioId: '' };
   const known = stage.scenarios.some((s) => s.id === scenarioId) || scenarioId === MANUAL;
@@ -52,11 +62,13 @@ export function App() {
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
-  const go = (stage: Stage | null, scenarioId?: string) => {
-    const hash = stage ? `#${stage.id}/${scenarioId ?? stage.scenarios[0]!.id}` : '#';
+  const navigate = (hash: string) => {
     if (window.location.hash !== hash) window.location.hash = hash;
     else setLocation(readHash());
   };
+
+  const go = (stage: Stage | null, scenarioId?: string) => navigate(stage ? `#${stage.id}/${scenarioId ?? stage.scenarios[0]!.id}` : '#');
+  const goRoles = (moment: MomentId = MOMENTS[0]!.id) => navigate(`#${ROLES}/${moment}`);
 
   return (
     <div className="app">
@@ -71,8 +83,11 @@ export function App() {
           </span>
         </button>
         <nav className="stage-tabs" aria-label="Этапы турнира">
-          <button type="button" className={!location.stage ? 'active' : ''} onClick={() => go(null)}>
+          <button type="button" className={!location.stage && !location.roles ? 'active' : ''} onClick={() => go(null)}>
             Обзор
+          </button>
+          <button type="button" className={location.roles ? 'active' : ''} onClick={() => goRoles()}>
+            👥 Роли
           </button>
           {STAGES.map((stage) => (
             <button type="button" key={stage.id} className={location.stage?.id === stage.id ? 'active' : ''} onClick={() => go(stage)}>
@@ -82,7 +97,9 @@ export function App() {
         </nav>
       </header>
 
-      {location.stage ? (
+      {location.roles ? (
+        <RolesView key={location.roles} momentId={location.roles} onMoment={goRoles} />
+      ) : location.stage ? (
         <StageView
           key={`${location.stage.id}/${location.scenarioId}`}
           stage={location.stage}
@@ -91,7 +108,7 @@ export function App() {
           onScenario={(id) => go(location.stage, id)}
         />
       ) : (
-        <Overview onOpen={(stage) => go(stage)} />
+        <Overview onOpen={(stage) => go(stage)} onRoles={() => goRoles()} />
       )}
     </div>
   );

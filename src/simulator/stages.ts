@@ -1,3 +1,4 @@
+import { formatPoints, QUALIFIER_RULESET } from '../domain/match/ruleset.ts';
 import type { Engine, Scenario } from '../scenarios/engine.ts';
 import { DRAW_SCENARIOS } from '../scenarios/drawScenarios.ts';
 import { drawEngine, finalEngine, intakeEngine, matchEngine } from '../scenarios/engines.ts';
@@ -54,7 +55,7 @@ export const STAGES: Stage[] = [
     summary: 'Игроки и судья вместе; судья включает трек со своего телефона и отмечает ответы кнопками.',
     decisions: [
       'Короткий матч: 5 треков, побеждает тот, у кого больше очков',
-      'Исполнитель 0,9 и название 1,2 разыгрываются независимо; итог — после закрытия трека',
+      `Исполнитель ${formatPoints(QUALIFIER_RULESET.artistPoints)} и название ${formatPoints(QUALIFIER_RULESET.titlePoints)} разыгрываются независимо; итог — после закрытия трека`,
       'Ничья — по одному треку до разрыва; остановка только если кончились песни',
       'Свои песни игрокам не выдаются, ответы видит только судья',
     ],
