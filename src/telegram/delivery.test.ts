@@ -185,4 +185,51 @@ describe('Delivery', () => {
     expect(new TextDecoder().decode(archive['001.mp3'])).toBe('first');
     expect(new TextDecoder().decode(archive['002.mp3'])).toBe('second');
   });
+
+  it('копия базы снимается при отправке и уходит ZIP с JSON внутри', async () => {
+    const api = new FakeApi();
+    let taken = 0;
+    const databaseCopy = async () => {
+      taken++;
+      return '{"format":"music-tournament"}';
+    };
+    const delivery = new Delivery({ api, slots: new MemorySlotStore(), log: silentLog, databaseCopy });
+    await delivery.deliver([
+      {
+        kind: 'message',
+        to: '42',
+        text: '📦 Копия базы',
+        document: { fileName: 'tournament-20261011-120000.zip', mimeType: 'application/zip', content: '', databaseCopy: true },
+        buttons: [[{ label: '🔕 Больше не присылать', data: 't:copy:stop' }]],
+      },
+    ]);
+
+    expect(taken).toBe(1);
+    expect(api.methods()).toEqual(['sendDocument']);
+    const { params } = api.calls[0]!;
+    expect(params.caption).toBe('📦 Копия базы');
+    expect(params.reply_markup).toEqual({ inline_keyboard: [[{ text: '🔕 Больше не присылать', callback_data: 't:copy:stop' }]] });
+    const file = params.document as InputFile;
+    expect(file.filename).toBe('tournament-20261011-120000.zip');
+    const archive = unzipSync((await file.toRaw()) as Uint8Array);
+    expect(Object.keys(archive)).toEqual(['tournament-20261011-120000.json']);
+    expect(new TextDecoder().decode(archive['tournament-20261011-120000.json'])).toBe('{"format":"music-tournament"}');
+  });
+
+  it('копия базы больше лимита Telegram — вместо файла объяснение, как снять её вручную', async () => {
+    const api = new FakeApi();
+    const databaseCopy = async () => JSON.stringify({ events: Array.from({ length: 50 }, (_, i) => `событие ${i}`) });
+    const delivery = new Delivery({ api, slots: new MemorySlotStore(), log: silentLog, databaseCopy, maxDocumentBytes: 100 });
+    await delivery.deliver([
+      {
+        kind: 'message',
+        to: '42',
+        text: '📦 Копия базы',
+        document: { fileName: 'tournament-20261011-120000.zip', mimeType: 'application/zip', content: '', databaseCopy: true },
+      },
+    ]);
+    expect(api.methods()).toEqual(['sendMessage']);
+    expect(api.calls[0]!.params.text).toContain('больше, чем бот может отправить в Telegram');
+    expect(api.calls[0]!.params.text).toContain('npm run db:backup');
+  });
 });

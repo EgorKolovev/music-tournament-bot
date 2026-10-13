@@ -1,6 +1,7 @@
 import { inviteByLink, registerPerson } from '../bot/drawSession.ts';
 import { joinIntake } from '../bot/intakeSession.ts';
 import type { Outgoing, OutgoingMessage, UserId } from '../bot/protocol.ts';
+import { formatPoints } from '../domain/match/ruleset.ts';
 import type { Sender } from './events.ts';
 import { canAdmin, message, say, scope, toast } from './helpers.ts';
 import { resendPanels } from './panels.ts';
@@ -49,6 +50,7 @@ function registrationMessage(state: TournamentState, to: UserId, pending: Pendin
       buttons: [[{ label: `👤 ${pending.suggested}`, data: 'r:name' }]],
     };
   }
+  const ruleset = state.config.qualifierRuleset;
   return {
     kind: 'message',
     to,
@@ -59,7 +61,7 @@ function registrationMessage(state: TournamentState, to: UserId, pending: Pendin
       '',
       'Правила коротко:',
       '• Отбор — очные матчи один на один, судья включает трек со своего телефона.',
-      '• Исполнитель — 0,9 балла, название — 1,2. Свои песни тебе не выпадут.',
+      `• Исполнитель — ${formatPoints(ruleset.artistPoints)} балла, название — ${formatPoints(ruleset.titlePoints)}. Свои песни тебе не выпадут.`,
       '• Результат подтверждают судья и оба игрока; спор решает организатор.',
       '• Судить можно чужие матчи; песни, которые услышишь как судья, тебе потом не выпадут.',
       '',

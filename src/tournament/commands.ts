@@ -10,6 +10,7 @@ import { askLeave } from './leave.ts';
 import { handleStart } from './registration.ts';
 import { finalistIds } from './stages.ts';
 import type { Phase, Step, TournamentState } from './state.ts';
+import { renameTournament } from './settings.ts';
 import { personalStatus } from './status.ts';
 
 // Команды из чата: /start, /help, /status, /matches и команды организатора.
@@ -30,14 +31,9 @@ export function handleCommand(state: TournamentState, from: Sender, command: str
 
 // /rename <название> — только организатор. Уже отправленные сообщения остаются со старым названием.
 function rename(state: TournamentState, from: UserId, payload: string): Step {
-  const title = payload.trim().replace(/\s+/g, ' ');
-  if (title.length < 2 || title.length > 48) return say(state, from, 'Формат: /rename <название>, от 2 до 48 символов.');
-  const next: TournamentState = {
-    ...state,
-    config: { ...state.config, title },
-    journal: [...state.journal, `Организатор переименовал турнир: «${state.config.title}» → «${title}»`],
-  };
-  return say(next, from, `✏️ Турнир теперь называется «${title}».`);
+  const next = renameTournament(state, payload);
+  if (!next) return say(state, from, 'Формат: /rename <название>, от 2 до 48 символов.');
+  return say(next, from, `✏️ Турнир теперь называется «${next.config.title}».`);
 }
 
 function broadcast(state: TournamentState, from: UserId, text: string): Step {

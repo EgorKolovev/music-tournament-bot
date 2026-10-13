@@ -59,8 +59,12 @@ export interface DeliveryOptions {
   slots: SlotStore;
   log: Logger;
   downloadFile?: (filePath: string, signal?: AbortSignal) => Promise<Uint8Array>;
+  // JSON копии базы — снимается в момент отправки сообщения с document.databaseCopy.
+  databaseCopy?: () => Promise<string>;
   sleep?: (ms: number) => Promise<void>;
   maxAttempts?: number;
+  // Самый большой файл, который отправляем одним документом; тесты ставят меньше.
+  maxDocumentBytes?: number;
 }
 
 // Нажатие, которое вызвало шаг: на него обязательно отвечаем, иначе у пользователя крутится индикатор.
@@ -82,16 +86,20 @@ export class Delivery {
   private readonly slots: SlotStore;
   private readonly log: Logger;
   private readonly downloadFile?: (filePath: string, signal?: AbortSignal) => Promise<Uint8Array>;
+  private readonly databaseCopy?: () => Promise<string>;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly maxAttempts: number;
+  private readonly maxDocumentBytes: number;
 
   constructor(options: DeliveryOptions) {
     this.api = options.api;
     this.slots = options.slots;
     this.log = options.log;
     this.downloadFile = options.downloadFile;
+    this.databaseCopy = options.databaseCopy;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.maxAttempts = options.maxAttempts ?? 5;
+    this.maxDocumentBytes = options.maxDocumentBytes ?? MAX_ARCHIVE_PART_BYTES;
   }
 
   // Сбой одного сообщения не останавливает остальные: состояние ядра уже сохранено.
@@ -178,8 +186,9 @@ export class Delivery {
       return result.message_id;
     }
     if (kind === 'document') {
-      const { fileName, content, archiveFiles } = message.document!;
+      const { fileName, content, archiveFiles, databaseCopy } = message.document!;
       if (archiveFiles) return this.sendArchive(message, archiveFiles);
+      if (databaseCopy) return this.sendDatabaseCopy(message);
       // Строку InputFile принял бы за путь к файлу — передаём байты.
       const document = new InputFile(new TextEncoder().encode(content), fileName);
       const result = await this.request('sendDocument', () =>
@@ -208,7 +217,7 @@ export class Delivery {
       if (!info.file_path) throw new Error(`getFile без file_path для ${file.fileName}`);
       const content = await this.request('downloadFile', () => this.downloadFile!(info.file_path!));
       // MP3 уже сжат: level 0 быстрее и почти не меняет размер. Запас покрывает заголовки ZIP.
-      if (bytes > 0 && bytes + content.byteLength + 1024 > MAX_ARCHIVE_PART_BYTES) {
+      if (bytes > 0 && bytes + content.byteLength + 1024 > this.maxDocumentBytes) {
         parts.push(zipSync(entries, { level: 0 }));
         entries = {};
         bytes = 0;
@@ -230,6 +239,29 @@ export class Delivery {
       sent = result.message_id;
     }
     return sent;
+  }
+
+  // Копия базы снимается сейчас, а не когда событие попало в outbox: в ZIP — свежая база.
+  // Не влезает в лимит Telegram — вместо файла объяснение, как снять копию вручную.
+  private async sendDatabaseCopy(message: OutgoingMessage): Promise<number> {
+    if (!this.databaseCopy) throw new Error('копия базы не настроена');
+    const zipName = message.document!.fileName;
+    const json = new TextEncoder().encode(await this.databaseCopy());
+    const archive = zipSync({ [zipName.replace(/\.zip$/i, '.json')]: json });
+    const reply_markup = keyboard(message.buttons);
+    if (archive.byteLength > this.maxDocumentBytes) {
+      const megabytes = Math.ceil(archive.byteLength / 1024 / 1024);
+      const text =
+        `📦 Копия базы в архиве весит ${megabytes} МБ — больше, чем бот может отправить в Telegram. ` +
+        'Снимите её командой npm run db:backup — docs/operations.md, «Копии от бота».';
+      const result = await this.request('sendMessage', () => this.api.raw.sendMessage({ chat_id: message.to, text, reply_markup }));
+      return result.message_id;
+    }
+    const document = new InputFile(archive, zipName);
+    const result = await this.request('sendDocument', () =>
+      this.api.raw.sendDocument({ chat_id: message.to, document, caption: message.text || undefined, reply_markup }),
+    );
+    return result.message_id;
   }
 
   private async edit(known: SlotRecord, message: OutgoingMessage, kind: MessageKind): Promise<void> {

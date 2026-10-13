@@ -40,6 +40,9 @@ export interface OutgoingMessage {
     // Telegram-адаптер скачивает эти file_id, складывает файлы в ZIP и при необходимости
     // отправляет несколькими частями. В outbox остаются только ссылки, не байты архива.
     archiveFiles?: { fileName: string; fileId: string }[];
+    // Копия базы: Telegram-адаптер снимает её в момент отправки и присылает ZIP с JSON внутри.
+    // В outbox остаётся только пометка, не данные.
+    databaseCopy?: boolean;
   };
   buttons?: Button[][];
 }
@@ -70,6 +73,8 @@ export interface WorkerResult {
   // С какой секунды резался фрагмент. Автор мог сдвинуть начало, пока шла нарезка, —
   // такой результат устарел. Без поля результат не проверяется (симулятор).
   startSec?: number;
+  // Длина фрагмента, с которой резал worker: организатор мог её сменить, пока шла нарезка.
+  fragmentSec?: number;
 }
 
 export type UserIncoming = Exclude<Incoming, { kind: 'worker' }>;

@@ -80,11 +80,7 @@ export function archive(state: TournamentState): Step {
 }
 
 export function finalistIds(state: TournamentState): UserId[] {
-  const draw = state.draw;
-  if (!draw?.bracket) return [];
-  // Игроков не больше числа финалистов — отбор не нужен, в финал проходят все.
-  if (draw.bracket.rounds.length === 0) return draw.config.players.map((p) => p.id);
-  return qualifiedIds(draw);
+  return state.draw ? qualifiedIds(state.draw) : [];
 }
 
 // Песни пула для матча: id — музыкальная идентичность, авторы — все, кто её присылал.

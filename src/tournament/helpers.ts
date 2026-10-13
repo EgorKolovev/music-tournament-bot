@@ -69,6 +69,11 @@ export function isOrganizer(state: TournamentState, id: UserId): boolean {
   return state.config.organizerId === id;
 }
 
+// Вышел из турнира сам (/leave), а не снят организатором. В снимках прошлых версий поля нет.
+export function hasLeft(state: TournamentState, id: UserId): boolean {
+  return state.left?.includes(id) ?? false;
+}
+
 export function canAdmin(state: TournamentState, id: UserId): boolean {
   return isOrganizer(state, id) || state.config.adminIds.includes(id);
 }

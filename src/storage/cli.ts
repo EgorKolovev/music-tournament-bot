@@ -1,6 +1,7 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import { strFromU8, unzipSync } from 'fflate';
 import pg from 'pg';
 import { DEFAULT_DATABASE_URL, pgDatabase, type Database } from './database.ts';
 import { dropTournament, exportTournament, importTournament, tournamentSummary, type TournamentDump } from './store.ts';
@@ -9,9 +10,10 @@ import { dropTournament, exportTournament, importTournament, tournamentSummary, 
 // База — DATABASE_URL из .env. Копии — JSON в backups/: там ID и имена участников, в git они не попадают.
 // Перед reset и restore текущий турнир сохраняется в копию — случайный сброс можно откатить.
 // В Docker Compose копии делает сервис backup (pg_dump), новый турнир — docker compose down -v.
+// restore понимает и ZIP, который бот присылает организатору («📦 Копия базы»): JSON внутри тот же.
 
 const BACKUP_DIR = 'backups';
-const BACKUP_FILE = /^tournament-\d{8}-\d{6}\.json$/;
+const BACKUP_FILE = /^tournament-\d{8}-\d{6}\.(json|zip)$/;
 
 const url = process.env.DATABASE_URL?.trim() || DEFAULT_DATABASE_URL;
 const where = describe(url);
@@ -51,15 +53,12 @@ async function restore(db: Database, fileArg: string | undefined): Promise<void>
     process.exitCode = 1;
     return;
   }
-  const text = await readFile(file, 'utf8').catch(() => {
-    throw new Error(`файла ${file} нет`);
-  });
-  const dump = JSON.parse(text) as TournamentDump;
+  const dump = await readDump(file);
   if (dump?.format !== 'music-tournament') throw new Error(`${file} — не копия турнира`);
   if (await botRunning(db)) return;
 
   const created = new Date(dump.createdAt).toLocaleString('ru-RU');
-  console.log(`Копия ${file}: турнир «${dump.title}» от ${created}, событий в журнале: ${dump.tables.events?.length ?? 0}.`);
+  console.log(`Копия ${file}: «${dump.title}» от ${created}, событий в журнале: ${dump.tables.events?.length ?? 0}.`);
   const current = await tournamentSummary(db);
   if (current) console.log(`Сейчас в базе ${where}: «${current.title}», событий: ${current.events} — сохраню его в копию.`);
   if (!(yes || (await confirm('Восстановить? Напишите «да»: ')))) {
@@ -78,14 +77,14 @@ async function reset(db: Database): Promise<void> {
     console.log(`В базе ${where} турнира нет — чистить нечего.`);
     return;
   }
-  console.log(`База ${where}: турнир «${summary.title}», событий в журнале: ${summary.events}.`);
-  if (!(yes || (await confirm('Удалить его? Копию сохраню в backups/. Напишите «да»: ')))) {
+  console.log(`База ${where}: «${summary.title}», событий в журнале: ${summary.events}.`);
+  if (!(yes || (await confirm('Удалить все турниры? Копию сохраню в backups/. Напишите «да»: ')))) {
     console.log('Отменено, база не тронута.');
     return;
   }
   const saved = await saveBackup(db);
   await dropTournament(db);
-  console.log(`Удалён, копия — ${saved}. npm run bot начнёт новый турнир с параметрами из .env.`);
+  console.log(`Удалено, копия — ${saved}. npm run bot начнёт новый турнир с параметрами из .env.`);
 }
 
 async function saveBackup(db: Database): Promise<string | undefined> {
@@ -100,6 +99,16 @@ async function saveBackup(db: Database): Promise<string | undefined> {
   const file = join(BACKUP_DIR, `tournament-${date}-${time}.json`);
   await writeFile(file, JSON.stringify(dump));
   return file;
+}
+
+async function readDump(file: string): Promise<TournamentDump> {
+  const bytes = await readFile(file).catch(() => {
+    throw new Error(`файла ${file} нет`);
+  });
+  if (!file.toLowerCase().endsWith('.zip')) return JSON.parse(strFromU8(bytes)) as TournamentDump;
+  const json = Object.entries(unzipSync(bytes)).find(([name]) => name.toLowerCase().endsWith('.json'));
+  if (!json) throw new Error(`в ${file} нет JSON — это не копия турнира`);
+  return JSON.parse(strFromU8(json[1])) as TournamentDump;
 }
 
 async function latestBackup(): Promise<string | undefined> {

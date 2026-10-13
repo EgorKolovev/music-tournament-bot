@@ -1,5 +1,6 @@
 import type { OutgoingMessage, UserId } from '../bot/protocol.ts';
 import type { SlotRecord, SlotStore } from '../telegram/delivery.ts';
+import { fromSnapshot, type BotState } from '../tournament/bot.ts';
 import type { StampedEvent } from '../tournament/events.ts';
 import type { TournamentState } from '../tournament/tournament.ts';
 import type { AudioJob, AudioResult } from '../worker/audioProcessor.ts';
@@ -7,9 +8,10 @@ import type { JobSource } from '../worker/workerLoop.ts';
 import type { Database, Queryable } from './database.ts';
 
 // Хранение по «минимальному» варианту (docs/telegram-integration.md, раздел 3): журнал событий
-// турнира и периодический снимок состояния, плюс inbox, outbox, slot → message_id и очередь
-// задач аудио — в PostgreSQL. JSON хранится текстом: jsonb переставил бы ключи, а порядок ключей
-// в состоянии влияет на повтор журнала.
+// и периодический снимок состояния, плюс inbox, outbox, slot → message_id и очередь задач аудио —
+// в PostgreSQL. JSON хранится текстом: jsonb переставил бы ключи, а порядок ключей в состоянии
+// влияет на повтор журнала. Снимок — все турниры бота разом; снимки до нескольких турниров — один
+// турнир без обёртки (fromSnapshot).
 
 export interface OutboxItem {
   id: number;
@@ -17,9 +19,12 @@ export interface OutboxItem {
   attempts: number;
 }
 
+// Снимок в базе: состояние бота или, у снимков прошлых версий, один турнир.
+export type StoredState = BotState | TournamentState;
+
 export interface CommitInput {
   event: StampedEvent;
-  state: TournamentState;
+  state: BotState;
   out: OutgoingMessage[];
   updateIds: number[];
 }
@@ -69,17 +74,19 @@ const SCHEMA = `
     result TEXT
   );
   ALTER TABLE jobs ADD COLUMN IF NOT EXISTS start_sec INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE jobs ADD COLUMN IF NOT EXISTS fragment_sec INTEGER;
 `;
 
-// Что лежит в базе — чтобы подтвердить удаление. undefined — турнира нет.
+// Что лежит в базе — чтобы подтвердить удаление. undefined — турнира нет. title — названия всех
+// турниров бота через запятую.
 export async function tournamentSummary(db: Queryable): Promise<{ title: string; events: number } | undefined> {
   const { rows } = await db.query<{ exists: boolean }>(`SELECT to_regclass('snapshots') IS NOT NULL AS exists`);
   if (!rows[0]!.exists) return undefined;
   const snapshot = await db.query<{ state: string }>('SELECT state FROM snapshots ORDER BY seq DESC LIMIT 1');
   if (snapshot.rows.length === 0) return undefined;
-  const { config } = JSON.parse(snapshot.rows[0]!.state) as TournamentState;
+  const { tournaments } = fromSnapshot(JSON.parse(snapshot.rows[0]!.state) as StoredState);
   const events = await db.query<{ n: number }>('SELECT count(*)::int AS n FROM events');
-  return { title: config.title, events: events.rows[0]!.n };
+  return { title: tournaments.map((t) => t.state.config.title).join('», «'), events: events.rows[0]!.n };
 }
 
 // Турнир целиком: следующий Store.open создаст таблицы пустыми, бот начнёт новый турнир.
@@ -161,14 +168,19 @@ export class Store implements SlotStore, JobSource {
     return new Store(db);
   }
 
+  // Копия всей базы для организатора — то же, что сохраняет npm run db:backup.
+  dump(createdAt: Date): Promise<TournamentDump | undefined> {
+    return exportTournament(this.db, createdAt);
+  }
+
   // --- Журнал и снимки ----------------------------------------------------------
 
-  async latestSnapshot(): Promise<{ seq: number; state: TournamentState } | undefined> {
+  async latestSnapshot(): Promise<{ seq: number; state: StoredState } | undefined> {
     const { rows } = await this.db.query<{ seq: number; state: string }>(
       'SELECT seq, state FROM snapshots ORDER BY seq DESC LIMIT 1',
     );
     const row = rows[0];
-    return row && { seq: row.seq, state: JSON.parse(row.state) as TournamentState };
+    return row && { seq: row.seq, state: JSON.parse(row.state) as StoredState };
   }
 
   async eventsAfter(seq: number): Promise<StampedEvent[]> {
@@ -176,8 +188,8 @@ export class Store implements SlotStore, JobSource {
     return rows.map((r) => JSON.parse(r.payload) as StampedEvent);
   }
 
-  // Начальное состояние турнира: снимок с seq 0 и приветственные сообщения.
-  async initialize(state: TournamentState, out: OutgoingMessage[]): Promise<void> {
+  // Начальное состояние бота: снимок с seq 0 и приветственные сообщения.
+  async initialize(state: BotState, out: OutgoingMessage[]): Promise<void> {
     await this.db.transaction(async (tx) => {
       await tx.query('INSERT INTO snapshots (seq, state) VALUES (0, $1)', [JSON.stringify(state)]);
       await enqueueOutbox(tx, out);
@@ -204,7 +216,7 @@ export class Store implements SlotStore, JobSource {
   }
 
   // Принудительный снимок при остановке: следующий запуск не будет повторять журнал.
-  async snapshot(state: TournamentState): Promise<void> {
+  async snapshot(state: BotState): Promise<void> {
     await this.db.query(
       `INSERT INTO snapshots (seq, state) VALUES ((SELECT COALESCE(MAX(seq), 0) FROM events), $1)
        ON CONFLICT (seq) DO UPDATE SET state = EXCLUDED.state`,
@@ -271,17 +283,19 @@ export class Store implements SlotStore, JobSource {
 
   // --- Очередь аудио ---------------------------------------------------------------
 
-  // Автор сдвинул начало — задача той же заявки возвращается в очередь с новым началом.
-  // Если старая в этот момент режется, её результат уже ничего не закроет (complete по start_sec).
+  // Автор сдвинул начало или организатор сменил длину фрагмента — задача той же заявки возвращается
+  // в очередь. Если старая в этот момент режется, её результат уже ничего не закроет (complete по
+  // start_sec и fragment_sec). У задач прошлых версий fragment_sec нет — worker режет по умолчанию.
   async enqueueJobs(jobs: AudioJob[]): Promise<number> {
     let added = 0;
     for (const job of jobs) {
       const { rowCount } = await this.db.query(
-        `INSERT INTO jobs (submission_id, file_id, size_bytes, start_sec) VALUES ($1, $2, $3, $4)
+        `INSERT INTO jobs (submission_id, file_id, size_bytes, start_sec, fragment_sec) VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (submission_id) DO UPDATE
-           SET start_sec = EXCLUDED.start_sec, status = 'pending', attempts = 0, not_before = 0, result = NULL
-           WHERE jobs.start_sec <> EXCLUDED.start_sec`,
-        [job.submissionId, job.fileId, job.sizeBytes ?? null, job.startSec],
+           SET start_sec = EXCLUDED.start_sec, fragment_sec = EXCLUDED.fragment_sec,
+             status = 'pending', attempts = 0, not_before = 0, result = NULL
+           WHERE jobs.start_sec <> EXCLUDED.start_sec OR jobs.fragment_sec IS DISTINCT FROM EXCLUDED.fragment_sec`,
+        [job.submissionId, job.fileId, job.sizeBytes ?? null, job.startSec, job.fragmentSec ?? null],
       );
       added += rowCount;
     }
@@ -289,14 +303,20 @@ export class Store implements SlotStore, JobSource {
   }
 
   async claim(): Promise<AudioJob | undefined> {
-    const { rows } = await this.db.query<{ submission_id: string; file_id: string; size_bytes: number | null; start_sec: number }>(
+    const { rows } = await this.db.query<{
+      submission_id: string;
+      file_id: string;
+      size_bytes: number | null;
+      start_sec: number;
+      fragment_sec: number | null;
+    }>(
       `UPDATE jobs SET status = 'running'
        WHERE submission_id = (
          SELECT submission_id FROM jobs
          WHERE status = 'pending' AND not_before <= $1 AND attempts < $2
          ORDER BY seq LIMIT 1 FOR UPDATE SKIP LOCKED
        )
-       RETURNING submission_id, file_id, size_bytes::float8 AS size_bytes, start_sec`,
+       RETURNING submission_id, file_id, size_bytes::float8 AS size_bytes, start_sec, fragment_sec`,
       [Date.now(), JOB_ATTEMPTS],
     );
     const row = rows[0];
@@ -306,16 +326,17 @@ export class Store implements SlotStore, JobSource {
         fileId: row.file_id,
         sizeBytes: row.size_bytes ?? undefined,
         startSec: row.start_sec,
+        fragmentSec: row.fragment_sec ?? undefined,
       }
     );
   }
 
   async complete(result: AudioResult): Promise<void> {
-    await this.db.query(`UPDATE jobs SET status = 'done', result = $2 WHERE submission_id = $1 AND start_sec = $3`, [
-      result.submissionId,
-      JSON.stringify(result),
-      result.startSec,
-    ]);
+    await this.db.query(
+      `UPDATE jobs SET status = 'done', result = $2
+       WHERE submission_id = $1 AND start_sec = $3 AND fragment_sec IS NOT DISTINCT FROM $4`,
+      [result.submissionId, JSON.stringify(result), result.startSec, result.fragmentSec ?? null],
+    );
   }
 
   // Временная ошибка: повтор с растущей задержкой (1, 2, 4… минуты, не больше 30);
@@ -324,18 +345,23 @@ export class Store implements SlotStore, JobSource {
     await this.db.query(
       `UPDATE jobs SET status = 'pending', attempts = attempts + 1,
          not_before = $2 + LEAST(60000 * power(2, attempts), 1800000)::bigint, result = $3
-       WHERE submission_id = $1 AND start_sec = $4`,
-      [job.submissionId, Date.now(), String(error instanceof Error ? error.message : error), job.startSec],
+       WHERE submission_id = $1 AND start_sec = $4 AND fragment_sec IS NOT DISTINCT FROM $5`,
+      [job.submissionId, Date.now(), String(error instanceof Error ? error.message : error), job.startSec, job.fragmentSec ?? null],
     );
   }
 
   // Задачи, исчерпавшие попытки, — превращаются в окончательную неудачу файла.
   async exhaustedJobs(): Promise<AudioJob[]> {
-    const { rows } = await this.db.query<{ submission_id: string; file_id: string; start_sec: number }>(
-      `SELECT submission_id, file_id, start_sec FROM jobs WHERE status = 'pending' AND attempts >= $1 ORDER BY seq`,
+    const { rows } = await this.db.query<{ submission_id: string; file_id: string; start_sec: number; fragment_sec: number | null }>(
+      `SELECT submission_id, file_id, start_sec, fragment_sec FROM jobs WHERE status = 'pending' AND attempts >= $1 ORDER BY seq`,
       [JOB_ATTEMPTS],
     );
-    return rows.map((r) => ({ submissionId: r.submission_id, fileId: r.file_id, startSec: r.start_sec }));
+    return rows.map((r) => ({
+      submissionId: r.submission_id,
+      fileId: r.file_id,
+      startSec: r.start_sec,
+      fragmentSec: r.fragment_sec ?? undefined,
+    }));
   }
 }
 

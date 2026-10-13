@@ -152,6 +152,8 @@ export function handleIntake(session: IntakeSession, input: Incoming): IntakeSte
   if (input.kind === 'worker') {
     let intake = session.intake;
     for (const r of input.results) {
+      // Нарезано с прежней длиной фрагмента — по новой уже стоит задача.
+      if (r.fragmentSec !== undefined && r.fragmentSec !== session.config.fragmentSec) continue;
       intake = completeProcessing(intake, r.submissionId, r.ok, { startSec: r.startSec, gameFileId: r.gameFileId });
     }
     next = { ...session, intake };
@@ -238,7 +240,8 @@ export function leaveIntake(session: IntakeSession, userId: UserId): IntakeStep 
   return emit(setUi(setSongsOnly(session, userId, true), userId, { mode: { kind: 'idle' }, notice }), before);
 }
 
-// Играет или только присылает песни. Пока идёт сбор — сам участник или организатор.
+// Играет или только присылает песни. Переключают до закрытия сбора участник или организатор;
+// после закрытия — только выход (/leave), без возврата.
 function setSongsOnly(session: IntakeSession, userId: UserId, songsOnly: boolean): IntakeSession {
   const others = (session.config.songsOnly ?? []).filter((id) => id !== userId);
   return { ...session, config: { ...session.config, songsOnly: songsOnly ? [...others, userId] : others } };

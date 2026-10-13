@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { OutgoingMessage } from '../bot/protocol.ts';
+import { createBot } from '../tournament/bot.ts';
 import { createTournament } from '../tournament/tournament.ts';
 import { testConfig } from '../tournament/testBot.ts';
 import { dropTournament, exportTournament, importTournament, Store, tournamentSummary } from './store.ts';
@@ -17,7 +18,7 @@ async function open(db = testDatabase()) {
 }
 
 const message = (to: string, text: string): OutgoingMessage => ({ kind: 'message', to, text });
-const state = createTournament(testConfig()).state;
+const state = createBot(testConfig()).state;
 
 describe('Store на PostgreSQL (PGlite)', () => {
   it('журнал: снимок каждые 50 событий, хранятся последние три', async () => {
@@ -38,8 +39,8 @@ describe('Store на PostgreSQL (PGlite)', () => {
   it('снимок при остановке заменяет снимок того же seq', async () => {
     const { store } = await open();
     await store.initialize(state, []);
-    await store.snapshot({ ...state, phase: 'archive' });
-    expect((await store.latestSnapshot())?.state.phase).toBe('archive');
+    await store.snapshot({ ...state, lobby: 'list' });
+    expect((await store.latestSnapshot())?.state).toMatchObject({ lobby: 'list' });
   });
 
   it('inbox и outbox: порядок, отказ после ошибки, повтор update не дублируется', async () => {
@@ -103,12 +104,28 @@ describe('Store на PostgreSQL (PGlite)', () => {
     expect(await store.claim()).toMatchObject({ submissionId: 'a', startSec: 75 });
   });
 
+  it('новая длина фрагмента возвращает задачу в очередь, в том числе задачу прошлой версии без длины', async () => {
+    const { store } = await open();
+    await store.enqueueJobs([{ submissionId: 'a', fileId: 'A', startSec: 0 }]);
+    expect(await store.enqueueJobs([{ submissionId: 'a', fileId: 'A', startSec: 0, fragmentSec: 60 }])).toBe(1);
+    const old = (await store.claim())!;
+    expect(old).toMatchObject({ fragmentSec: 60 });
+    expect(await store.enqueueJobs([{ submissionId: 'a', fileId: 'A', startSec: 0, fragmentSec: 30 }])).toBe(1);
+
+    await store.complete({ submissionId: 'a', ok: true, startSec: 0, fragmentSec: 60 });
+    expect(await store.claim()).toMatchObject({ submissionId: 'a', fragmentSec: 30 });
+  });
+
   it('сброс: показывает, что удаляется, и следующий запуск начинает новый турнир', async () => {
     const { db, store } = await open();
     expect(await tournamentSummary(db)).toBeUndefined();
     await store.initialize(state, [message('1', 'привет')]);
     await store.commit({ event: { at: 1, event: { kind: 'tick' } }, state, out: [], updateIds: [7] });
     expect(await tournamentSummary(db)).toEqual({ title: 'Тестовый турнир', events: 1 });
+    // Несколько турниров — все названия.
+    const second = { ...state, tournaments: [...state.tournaments, { state: { ...state.tournaments[0]!.state, config: testConfig({ title: 'Проба' }) } }] };
+    await store.snapshot(second);
+    expect(await tournamentSummary(db)).toEqual({ title: 'Тестовый турнир», «Проба', events: 1 });
 
     await dropTournament(db);
     expect(await tournamentSummary(db)).toBeUndefined();
@@ -155,6 +172,14 @@ describe('Store на PostgreSQL (PGlite)', () => {
     await importTournament(other, dump);
     expect(await (await Store.open(other)).claim()).toMatchObject({ submissionId: 'a', startSec: 0 });
     await expect(importTournament(other, { ...dump, format: 'другое' } as never)).rejects.toThrow('не копия турнира');
+  });
+
+  it('снимок прошлой версии — один турнир без обёртки — читается как есть', async () => {
+    const { db, store } = await open();
+    const legacy = createTournament(testConfig({ title: 'Старый' })).state;
+    await db.query('INSERT INTO snapshots (seq, state) VALUES (0, $1)', [JSON.stringify(legacy)]);
+    expect(await tournamentSummary(db)).toEqual({ title: 'Старый', events: 0 });
+    expect((await store.latestSnapshot())?.state).toEqual(legacy);
   });
 
   it('взятая до падения задача возвращается в очередь при следующем запуске', async () => {

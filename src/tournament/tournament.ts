@@ -5,13 +5,14 @@ import type { Incoming, OutgoingMessage, UserId } from '../bot/protocol.ts';
 import { findMatch } from '../domain/bracket/bracket.ts';
 import { handleCommand } from './commands.ts';
 import type { Sender, StampedEvent, TournamentEvent } from './events.ts';
-import { canAdmin, intakeStep, isParticipant, say, scope, toast } from './helpers.ts';
+import { canAdmin, intakeStep, isOrganizer, isParticipant, say, scope, toast } from './helpers.ts';
 import { adminMenuButton, forfeitWithdrawn } from './organizer.ts';
 import { leaveButton } from './leave.ts';
-import { adminPanel, renderExtras } from './panels.ts';
+import { adminPanel, renderExtras, resendPanels, retiredNotices } from './panels.ts';
 import { keepResult, matchStep, openDispute, replayMatch, syncMatches } from './qualifiers.ts';
 import { registrationButton, registrationText } from './registration.ts';
 import { tick } from './reminders.ts';
+import { changeSetting, isSettingKey, renameTournament } from './settings.ts';
 import { archive, openDraw, openFinal, toFinal } from './stages.ts';
 import { ORG, type PanelScreen, type Step, type TournamentConfig, type TournamentState } from './state.ts';
 
@@ -115,6 +116,7 @@ function dispatch(state: TournamentState, event: TournamentEvent, at: number): S
 
 function handleText(state: TournamentState, from: Sender, text: string, at: number): Step {
   if (state.registration[from.id]) return registrationText(state, from, text);
+  if (isOrganizer(state, from.id) && state.panels?.[from.id] === 'rename') return renameFromPanel(state, from.id, text);
   if (state.phase === 'intake' && isParticipant(state, from.id)) {
     return intakeStep(state, { kind: 'text', from: from.id, text });
   }
@@ -177,7 +179,7 @@ function adminButton(state: TournamentState, actor: UserId, data: string, at: nu
 
 function organizerButton(state: TournamentState, actor: UserId, data: string, at: number): Step {
   const organizer = state.config.organizerId;
-  const nav = navigate(state, actor, data);
+  const nav = navigate(state, actor, data) ?? settingButton(state, actor, data);
   if (nav) return nav;
   if (data === 'toDraw') return openDraw(state, at);
   if (data === 'toFinal') return toFinal(state);
@@ -186,7 +188,7 @@ function organizerButton(state: TournamentState, actor: UserId, data: string, at
   const menu = adminMenuButton(state, data);
   if (menu) return followMenu(menu, actor, data);
   const decision = /^(keep|replay):(.+)$/.exec(data);
-  if (decision) return decision[1] === 'keep' ? keepResult(state, decision[2]!) : replayMatch(state, decision[2]!);
+  if (decision) return decision[1] === 'keep' ? keepResult(state, decision[2]!) : replay(state, decision[2]!);
 
   const input: Incoming = { kind: 'button', from: ORG, data };
   if (state.phase === 'intake') return intakeStep(state, input, actor);
@@ -201,13 +203,14 @@ function organizerButton(state: TournamentState, actor: UserId, data: string, at
   return toast(state, organizer, 'Сейчас это действие недоступно');
 }
 
-const SCREENS: readonly PanelScreen[] = ['home', 'intake', 'bracket', 'matches', 'players', 'final', 'settings'];
+const SCREENS: readonly PanelScreen[] = ['home', 'intake', 'bracket', 'matches', 'players', 'final', 'settings', 'rename'];
 
 // Переходы по разделам панели: o:v:<раздел>, o:m:<матч>, o:open:<матч> (из уведомления), o:p:<участник>.
 function navigate(state: TournamentState, actor: UserId, data: string): Step | undefined {
   const view = /^v:(\w+)$/.exec(data);
   if (view) {
     const screen = SCREENS.find((s) => s === view[1]);
+    if (screen === 'rename' && !isOrganizer(state, actor)) return toast(state, actor, 'Переименовать турнир может только организатор');
     return screen ? setScreen(state, actor, screen) : toast(state, actor, 'Кнопка устарела');
   }
   const match = /^(?:m|open):(.+)$/.exec(data);
@@ -220,8 +223,35 @@ function navigate(state: TournamentState, actor: UserId, data: string): Step | u
   return undefined;
 }
 
+// ⚙️ Настройки: o:set:<ключ> — экран выбора, o:set:<ключ>:<значение> — изменение. Только организатор.
+function settingButton(state: TournamentState, actor: UserId, data: string): Step | undefined {
+  const set = /^set:(\w+)(?::(\d+))?$/.exec(data);
+  if (!set) return undefined;
+  if (!isOrganizer(state, actor)) return toast(state, actor, 'Менять настройки может только организатор');
+  const key = set[1]!;
+  if (!isSettingKey(key)) return toast(state, actor, 'Кнопка устарела');
+  if (set[2] === undefined) return setScreen(state, actor, `setting:${key}`);
+  return changeSetting(state, actor, key, Number(set[2]));
+}
+
+// Новое название из панели: организатор открыл «✏️ Переименовать» и прислал текст.
+function renameFromPanel(state: TournamentState, actor: UserId, text: string): Step {
+  const renamed = renameTournament(state, text);
+  if (!renamed) return say(state, actor, 'Название — от 2 до 48 символов. Пришлите ещё раз или нажмите «Отмена» в панели.');
+  // Панель ушла вверх по ленте, пока человек писал, — присылаем её внизу.
+  return resendPanels({ ...renamed, panels: { ...renamed.panels, [actor]: 'settings' } }, actor);
+}
+
 function setScreen(state: TournamentState, actor: UserId, screen: PanelScreen): Step {
   return { state: { ...state, panels: { ...state.panels, [actor]: screen } }, out: [] };
+}
+
+// Переигровка — новая попытка матча; уведомления прошлой попытки помечаются решёнными.
+function replay(state: TournamentState, matchId: string): Step {
+  const old = state.matches[matchId];
+  const step = replayMatch(state, matchId);
+  if (!old || step.state === state) return step;
+  return { ...step, out: [...step.out, ...retiredNotices(state, matchId, old)] };
 }
 
 // Меню технической победы и снятия видно в карточке матча и участника — туда и ведём, в том числе

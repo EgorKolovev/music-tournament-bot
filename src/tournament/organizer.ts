@@ -1,8 +1,9 @@
-import { eliminated, matchPlayers, qualifiedIds } from '../bot/drawSession.ts';
+import { eliminated, matchPlayers } from '../bot/drawSession.ts';
 import type { Outgoing, UserId } from '../bot/protocol.ts';
 import { openMatches } from '../domain/bracket/bracket.ts';
-import { matchTitle, message, participant, say, toast } from './helpers.ts';
+import { hasLeft, matchTitle, message, participant, say, toast } from './helpers.ts';
 import { closeWithResult } from './qualifiers.ts';
+import { finalistIds } from './stages.ts';
 import type { AdminMenu, Step, TournamentState } from './state.ts';
 
 // Инструменты организатора на отборе: техническая победа и снятие игрока
@@ -25,8 +26,9 @@ export function technicalResult(state: TournamentState, from: UserId, payload: s
 }
 
 // Технический результат: матч закрывается, победитель проходит дальше, участникам — уведомление.
+// Снятому и вышедшему про их пары не пишем: о снятии они уже знают.
 function awardTechnical(state: TournamentState, matchId: string, winner: UserId, reason: string, byOrganizer = true): Step {
-  const players = matchPlayers(state.draw!, matchId)!;
+  const players = matchPlayers(state.draw!, matchId)!.filter((id) => !state.withdrawn.includes(id));
   const runtime = state.matches[matchId];
   const people = runtime && !runtime.closed ? [runtime.session.config.judge.id, ...players] : players;
   const note = `технический результат: ${reason}`;
@@ -42,28 +44,21 @@ function awardTechnical(state: TournamentState, matchId: string, winner: UserId,
   return { state: closed.state, out: [...closed.out, ...notices] };
 }
 
-// Снятие с турнира: текущий матч и каждый следующий — техническое поражение снятого.
-function withdraw(state: TournamentState, userId: UserId): Step {
+// Снятие с турнира — организатором или самим игроком (/leave): текущий матч и каждый следующий —
+// техническое поражение. Вышедшему сам ответ уходит в сообщении подтверждения выхода.
+export function withdraw(state: TournamentState, userId: UserId, by: 'organizer' | 'self'): Step {
   const name = participant(state, userId).name;
+  const self = by === 'self';
   const next: TournamentState = {
     ...state,
     withdrawn: [...state.withdrawn, userId],
-    adminMenu: null,
-    journal: [...state.journal, `Организатор снял с турнира: ${name}`],
+    left: self ? [...(state.left ?? []), userId] : state.left,
+    adminMenu: self ? state.adminMenu : null,
+    journal: [...state.journal, self ? `Вышел из турнира сам: ${name}` : `Организатор снял с турнира: ${name}`],
   };
   const forfeits = forfeitWithdrawn(next);
-  return { state: forfeits.state, out: [message(userId, '🚪 Организатор снял тебя с турнира. Спасибо за игру!'), ...forfeits.out] };
-}
-
-// Игрок сам вышел из турнира (/leave): то же, что снятие, ответ ему — в сообщении подтверждения.
-export function leaveTournament(state: TournamentState, userId: UserId): Step {
-  const next: TournamentState = {
-    ...state,
-    withdrawn: [...state.withdrawn, userId],
-    left: [...(state.left ?? []), userId],
-    journal: [...state.journal, `Вышел из турнира сам: ${participant(state, userId).name}`],
-  };
-  return forfeitWithdrawn(next);
+  const notice = self ? [] : [message(userId, '🚪 Организатор снял тебя с турнира. Спасибо за игру!')];
+  return { state: forfeits.state, out: [...notice, ...forfeits.out] };
 }
 
 // Пары, где есть снятый, закрываются в пользу соперника. Победа может открыть следующую пару
@@ -81,7 +76,7 @@ export function forfeitWithdrawn(state: TournamentState): Step {
     // Сняты оба — дальше проходит первый и проиграет технически в следующей паре.
     const winner = pair.players.find((id) => !next.withdrawn.includes(id)) ?? pair.players[0];
     const loser = pair.players.find((id) => id !== winner)!;
-    const self = next.left?.includes(loser) ?? false;
+    const self = hasLeft(next, loser);
     const awarded = awardTechnical(next, pair.id, winner, self ? 'соперник вышел из турнира' : 'соперник снят с турнира', !self);
     next = awarded.state;
     out.push(...awarded.out);
@@ -115,18 +110,26 @@ export function adminMenuButton(state: TournamentState, data: string): Step | un
     }
     return setMenu({ kind: 'techConfirm', matchId, winner });
   }
-  if (data === 'techOk' && menu?.kind === 'techConfirm') {
-    if (!techCandidates(state).includes(menu.matchId)) return toast(setMenu(null).state, organizer, 'Этот матч уже закрыт');
-    return awardTechnical({ ...state, adminMenu: null }, menu.matchId, menu.winner, 'решение организатора');
+  // Подтверждения несут цель (techOk:<матч>:<победитель>, withdrawOk:<участник>); без цели — кнопки
+  // прошлой версии из журнала, цель тогда берётся из меню.
+  const techOk = /^techOk(?::([^:]+):(.+))?$/.exec(data);
+  const confirmed = techOk && (techOk[1] ? { matchId: techOk[1], winner: techOk[2]! } : menu?.kind === 'techConfirm' ? menu : undefined);
+  if (confirmed) {
+    if (!techCandidates(state).includes(confirmed.matchId) || !matchPlayers(draw, confirmed.matchId)!.includes(confirmed.winner)) {
+      return toast(setMenu(null).state, organizer, 'Этот матч уже закрыт');
+    }
+    return awardTechnical({ ...state, adminMenu: null }, confirmed.matchId, confirmed.winner, 'решение организатора');
   }
   const pick = /^withdrawPick:(.+)$/.exec(data);
   if (pick) {
     if (!withdrawCandidates(state).includes(pick[1]!)) return toast(state, organizer, 'Этого игрока снять уже нельзя');
     return setMenu({ kind: 'withdrawConfirm', userId: pick[1]! });
   }
-  if (data === 'withdrawOk' && menu?.kind === 'withdrawConfirm') {
-    if (!withdrawCandidates(state).includes(menu.userId)) return toast(setMenu(null).state, organizer, 'Этого игрока снять уже нельзя');
-    return withdraw(state, menu.userId);
+  const withdrawOk = /^withdrawOk(?::(.+))?$/.exec(data);
+  const target = withdrawOk && (withdrawOk[1] ?? (menu?.kind === 'withdrawConfirm' ? menu.userId : undefined));
+  if (target) {
+    if (!withdrawCandidates(state).includes(target)) return toast(setMenu(null).state, organizer, 'Этого игрока снять уже нельзя');
+    return withdraw(state, target, 'organizer');
   }
   return toast(setMenu(null).state, organizer, 'Меню устарело — откройте заново');
 }
@@ -140,7 +143,7 @@ export function techCandidates(state: TournamentState): string[] {
 // Кого можно снять: ещё играет в отборе — не выбыл, не снят и не прошёл в финал.
 export function withdrawCandidates(state: TournamentState): UserId[] {
   const draw = state.draw!;
-  const finalists = qualifiedIds(draw);
+  const finalists = finalistIds(state);
   return draw.config.players
     .map((p) => p.id)
     .filter((id) => !state.withdrawn.includes(id) && !finalists.includes(id) && !eliminated(draw, id));

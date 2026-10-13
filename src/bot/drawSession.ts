@@ -116,6 +116,16 @@ export function registerPerson(session: DrawSession, person: Participant, userna
   return emit({ ...session, config }, before);
 }
 
+// Игрок вышел до жеребьёвки: в сетку не попадёт, его карточка ожидания пары меняется.
+export function removePlayer(session: DrawSession, userId: UserId): DrawStep {
+  if (session.bracket) return { session, out: [] };
+  const before = render(session);
+  const players = session.config.players.filter((p) => p.id !== userId);
+  const step = emit({ ...session, config: { ...session.config, players } }, before);
+  const card: OutgoingMessage = { kind: 'message', to: userId, slot: 'card', text: '🚪 Ты вышел из турнира — в жеребьёвку не попадёшь.' };
+  return { session: step.session, out: [...step.out, card] };
+}
+
 // Ссылка t.me/<бот>?start=judge_<matchId>: открывший её получает приглашение; согласие
 // судьи и подтверждение обоих игроков всё равно нужны — знание ссылки прав не даёт.
 export function inviteByLink(session: DrawSession, matchId: string, userId: UserId): DrawStep {
@@ -270,7 +280,7 @@ export function currentMatch(session: DrawSession, userId: UserId): BracketMatch
 }
 
 function byeOf(session: DrawSession, userId: UserId): BracketMatch | undefined {
-  return session.bracket!.rounds[0]!.find((m) => m.isBye && resolveSlot(session.bracket!, {}, m.slots[0]) === userId);
+  return session.bracket!.rounds[0]?.find((m) => m.isBye && resolveSlot(session.bracket!, {}, m.slots[0]) === userId);
 }
 
 // Судья — не игрок этого матча и не судит другой незавершённый матч. Первыми идут гости, затем свободные
@@ -429,7 +439,8 @@ function renderOrganizer(session: DrawSession): OutgoingMessage {
   const to = config.organizer.id;
   if (!bracket) {
     const preview = buildQualifierBracket(config.players.map((p) => p.id), config.finalists, config.seed);
-    const byes = preview.rounds[0]!.filter((m) => m.isBye).length;
+    // Игроков не больше, чем мест в финале: кругов нет, в финал проходят все.
+    const byes = preview.rounds[0]?.filter((m) => m.isBye).length ?? 0;
     return {
       kind: 'message',
       to,
@@ -480,7 +491,10 @@ function describeSlot(session: DrawSession, slot: Slot): string {
 }
 
 export function qualifiedIds(session: DrawSession): UserId[] {
-  return session.bracket ? qualified(session.bracket, session.results) : [];
+  if (!session.bracket) return [];
+  // Игроков не больше, чем мест в финале: кругов нет, в финал проходят все.
+  if (session.bracket.rounds.length === 0) return session.config.players.map((p) => p.id);
+  return qualified(session.bracket, session.results);
 }
 
 // Все матчи отбора сыграны: финалисты определены.

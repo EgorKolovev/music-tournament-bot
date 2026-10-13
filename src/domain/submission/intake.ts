@@ -136,6 +136,11 @@ export function setStart(state: IntakeState, submissionId: string, startSec: num
   return update(state, submissionId, { startSec, processing: 'pending' });
 }
 
+// Организатор сменил длину фрагмента: каждую песню нужно нарезать заново.
+export function recutAll(state: IntakeState): IntakeState {
+  return { ...state, submissions: state.submissions.map((s) => (s.rejection ? s : { ...s, processing: 'pending' })) };
+}
+
 // Вердикт worker: файл декодируется и игровая версия собрана, либо файл битый.
 // Результат нарезки с прежним началом устарел — по новому началу уже стоит задача.
 export function completeProcessing(

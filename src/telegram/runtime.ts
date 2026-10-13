@@ -1,25 +1,35 @@
 import type { Api } from 'grammy';
 import type { Update } from 'grammy/types';
-import { pendingSubmissions } from '../bot/intakeSession.ts';
 import type { OutgoingMessage, OutgoingToast, UserId } from '../bot/protocol.ts';
 import type { AudioFile } from '../domain/submission/intake.ts';
 import type { Store } from '../storage/store.ts';
+import {
+  activeTournament,
+  createBot,
+  fromSnapshot,
+  handleBotEvent,
+  pendingAudio,
+  withLiveConfig,
+  type BotState,
+  type BotStep,
+} from '../tournament/bot.ts';
 import type { TournamentEvent } from '../tournament/events.ts';
-import { createTournament, handleEvent, type Step, type TournamentConfig, type TournamentState } from '../tournament/tournament.ts';
+import type { TournamentConfig, TournamentState } from '../tournament/tournament.ts';
 import type { AudioResult } from '../worker/audioProcessor.ts';
 import { isPermanent } from './apiErrors.ts';
 import { Delivery, type Logger, type Trigger } from './delivery.ts';
 import { FileBatcher, type Timers } from './fileBatcher.ts';
 import { parseUpdate, type Sender } from './updates.ts';
 
-// Связка: update → разбор → оркестратор турнира → хранение → доставка.
-// События обрабатываются строго по одному (блокировка на турнир): две кнопки судьи не применяются
+// Связка: update → разбор → бот с турнирами → хранение → доставка.
+// События обрабатываются строго по одному (блокировка на бот): две кнопки судьи не применяются
 // параллельно. Порядок на каждое событие: обработка → commit (журнал, outbox, inbox) → ответ на
 // нажатие → отправка outbox. Сбой отправки не откатывает игру; после перезапуска outbox досылается.
 
 export interface RuntimeOptions {
   api: Api;
   store: Store;
+  // Параметры первого турнира, если базы ещё нет; organizer, админы и username бота — всем турнирам.
   config: TournamentConfig;
   log: Logger;
   downloadFile?: (filePath: string, signal?: AbortSignal) => Promise<Uint8Array>;
@@ -53,9 +63,9 @@ export class Runtime {
   private queue: Promise<void> = Promise.resolve();
   private draining = false;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
-  private current: TournamentState;
+  private current: BotState;
 
-  private constructor(options: RuntimeOptions, state: TournamentState) {
+  private constructor(options: RuntimeOptions, state: BotState) {
     this.store = options.store;
     this.log = options.log;
     this.now = options.now ?? Date.now;
@@ -65,6 +75,11 @@ export class Runtime {
       slots: options.store,
       log: options.log,
       downloadFile: options.downloadFile,
+      databaseCopy: async () => {
+        const dump = await this.store.dump(new Date(this.now()));
+        if (!dump) throw new Error('в базе нет турнира — копировать нечего');
+        return JSON.stringify(dump);
+      },
       sleep: options.sleep,
     });
     this.batcher = new FileBatcher(
@@ -76,10 +91,15 @@ export class Runtime {
   }
 
   static async create(options: RuntimeOptions): Promise<Runtime> {
-    return new Runtime(options, await restore(options.store, options.config, options.log));
+    return new Runtime(options, await restore(options.store, options.config, options.log, (options.now ?? Date.now)()));
   }
 
+  // Активный турнир.
   get state(): TournamentState {
+    return activeTournament(this.current);
+  }
+
+  get bot(): BotState {
     return this.current;
   }
 
@@ -124,8 +144,8 @@ export class Runtime {
   }
 
   workerResult(result: AudioResult): Promise<void> {
-    const { submissionId, ok, gameFileId, startSec } = result;
-    const results = [{ submissionId, ok, gameFileId, startSec }];
+    const { submissionId, ok, gameFileId, startSec, fragmentSec } = result;
+    const results = [{ submissionId, ok, gameFileId, startSec, fragmentSec }];
     return this.enqueue(() => this.process({ kind: 'worker', results }, []));
   }
 
@@ -133,9 +153,9 @@ export class Runtime {
     return this.enqueue(async () => {
       // Файлы, которые так и не удалось обработать, — окончательная неудача, участник пришлёт замену.
       for (const job of await this.store.exhaustedJobs()) {
-        const { submissionId, startSec } = job;
-        await this.store.complete({ submissionId, ok: false, startSec, reason: 'attempts' });
-        await this.process({ kind: 'worker', results: [{ submissionId, ok: false, startSec }] }, []);
+        const { submissionId, startSec, fragmentSec } = job;
+        await this.store.complete({ submissionId, ok: false, startSec, fragmentSec, reason: 'attempts' });
+        await this.process({ kind: 'worker', results: [{ submissionId, ok: false, startSec, fragmentSec }] }, []);
       }
       await this.process({ kind: 'tick' }, []);
     });
@@ -168,9 +188,9 @@ export class Runtime {
 
   private async process(event: TournamentEvent, updateIds: number[], trigger?: Trigger): Promise<void> {
     const stamped = { at: this.now(), event };
-    let step: Step;
+    let step: BotStep;
     try {
-      step = handleEvent(this.current, stamped);
+      step = handleBotEvent(this.current, stamped);
     } catch (error) {
       this.log.error(`ошибка обработки ${event.kind}`, error);
       for (const id of updateIds) await this.store.markUpdate(id);
@@ -199,11 +219,12 @@ export class Runtime {
   }
 
   private async enqueueJobs(): Promise<void> {
-    const jobs = pendingSubmissions(this.current.intake).map((s) => ({
-      submissionId: s.id,
-      fileId: s.file.fileId,
-      sizeBytes: s.file.sizeBytes,
-      startSec: s.startSec,
+    const jobs = pendingAudio(this.current).map(({ id, submission, fragmentSec }) => ({
+      submissionId: id,
+      fileId: submission.file.fileId,
+      sizeBytes: submission.file.sizeBytes,
+      startSec: submission.startSec,
+      fragmentSec,
     }));
     if (jobs.length > 0 && (await this.store.enqueueJobs(jobs)) > 0) this.onJobs();
   }
@@ -245,20 +266,21 @@ export class Runtime {
   }
 }
 
-// Снимок плюс повтор событий после него. Если базы ещё нет — новый турнир.
-async function restore(store: Store, config: TournamentConfig, log: Logger): Promise<TournamentState> {
+// Снимок плюс повтор событий после него. Если базы ещё нет — новый турнир. Снимок прошлой версии —
+// один турнир: он становится турниром №1.
+async function restore(store: Store, config: TournamentConfig, log: Logger, at: number): Promise<BotState> {
   const live: LiveConfig = { organizerId: config.organizerId, adminIds: config.adminIds, botUsername: config.botUsername };
   const snapshot = await store.latestSnapshot();
   if (!snapshot) {
-    const created = createTournament(config);
+    const created = createBot(config, at);
     await store.initialize(created.state, messagesOf(created.out));
     log.info(`новый турнир «${config.title}», код ${config.code}`);
     return created.state;
   }
-  let state: TournamentState = { ...snapshot.state, config: { ...snapshot.state.config, ...live } };
+  let state = withLiveConfig(fromSnapshot(snapshot.state), live);
   const events = await store.eventsAfter(snapshot.seq);
-  for (const event of events) state = handleEvent(state, event).state;
-  log.info(`турнир восстановлен: снимок ${snapshot.seq} + ${events.length} событий`);
+  for (const event of events) state = handleBotEvent(state, event).state;
+  log.info(`восстановлено турниров: ${state.tournaments.length}, активный №${state.active}; снимок ${snapshot.seq} + ${events.length} событий`);
   return state;
 }
 

@@ -100,7 +100,8 @@ export interface TournamentState {
   journal: string[];
 }
 
-// Разделы панели админа; у карточек матча и участника — id после двоеточия.
+// Разделы панели админа; у карточек матча и участника — id после двоеточия. rename и setting:<ключ> —
+// только у организатора: на rename бот ждёт новое название текстом.
 export type PanelScreen =
   | 'home'
   | 'intake'
@@ -109,8 +110,10 @@ export type PanelScreen =
   | 'players'
   | 'final'
   | 'settings'
+  | 'rename'
   | `match:${string}`
-  | `player:${string}`;
+  | `player:${string}`
+  | `setting:${string}`;
 
 export interface Step {
   state: TournamentState;

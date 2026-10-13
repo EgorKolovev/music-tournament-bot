@@ -3,10 +3,9 @@ import { renderOrganizer as renderFinalOrganizer } from '../bot/finalSession.ts'
 import { acceptedCount, admittedPlayers, isSongsOnly, readyForDraw, render as renderIntake } from '../bot/intakeSession.ts';
 import type { Button, OutgoingMessage, UserId } from '../bot/protocol.ts';
 import { findMatch, openMatches, playedMatches, qualified } from '../domain/bracket/bracket.ts';
-import { formatPoints, type Ruleset } from '../domain/match/ruleset.ts';
-import { plural } from '../shared/text.ts';
-import { isoDate, isParticipant, matchTitle, panelHolders, participant, scoreLine, whoIs } from './helpers.ts';
+import { hasLeft, isoDate, isOrganizer, isParticipant, matchTitle, panelHolders, participant, scoreLine, whoIs } from './helpers.ts';
 import { techCandidates, withdrawCandidates } from './organizer.ts';
+import { isSettingKey, lockReason, SETTING_KEYS, settingChoice, settingLine, settingName } from './settings.ts';
 import { finalistIds } from './stages.ts';
 import { ORG, type MatchRuntime, type PanelScreen, type Step, type TournamentState } from './state.ts';
 import { matchProgress } from './status.ts';
@@ -20,9 +19,10 @@ import { matchProgress } from './status.ts';
 // восстанавливает турнир, повторяя журнал, и старые события должны значить то же самое.
 // Новые — только переходы: o:v:<раздел>, o:m:<матч>, o:p:<участник>, o:open:<матч>.
 
-const PANEL_SLOT = 'o:phase';
+export const PANEL_SLOT = 'o:phase';
 const HOME: Button = { label: '⬅️ К турниру', data: 'o:v:home' };
 const CANCEL: Button = { label: 'Отмена', data: 'o:menu:close' };
+const SETTINGS_BACK: Button = { label: '⬅️ К настройкам', data: 'o:v:settings' };
 
 interface Screen {
   text: string;
@@ -56,13 +56,27 @@ export function renderExtras(state: TournamentState): OutgoingMessage[] {
 
 // Панель админа на том разделе, где он её оставил.
 export function adminPanel(state: TournamentState, holder: UserId): OutgoingMessage {
-  const { text, buttons } = screen(state, screenOf(state, holder));
+  const { text, buttons } = screen(state, screenOf(state, holder), holder);
   return { kind: 'message', to: holder, slot: PANEL_SLOT, text, buttons: buttons.length ? buttons : undefined };
 }
 
 // Админ потерял панель в ленте или открыл её из уведомления — присылаем внизу.
 export function resendPanels(state: TournamentState, holder: UserId): Step {
   return { state, out: [{ ...adminPanel(state, holder), bump: true }] };
+}
+
+// Попытка матча, отправленная на переигровку, из renderExtras пропадает — её уведомления
+// помечаются решёнными здесь, один раз.
+export function retiredNotices(state: TournamentState, matchId: string, old: MatchRuntime): OutgoingMessage[] {
+  const { config } = old.session;
+  const out: OutgoingMessage[] = [];
+  if (old.decidedAt !== undefined) {
+    for (const player of config.players) {
+      out.push({ kind: 'message', to: player.id, slot: `x:${matchId}#${old.attempt}`, text: `Матч №${config.matchNo}: назначена переигровка.` });
+    }
+  }
+  if (old.dispute || old.confirmEscalated) out.push(...panelHolders(state).map((id) => issueNotice(state, matchId, { ...old, closed: true }, id)));
+  return out;
 }
 
 // Уведомление о споре или неподтверждённом результате; решение — в карточке матча.
@@ -85,12 +99,16 @@ export function screenOf(state: TournamentState, holder: UserId): PanelScreen {
   if (saved === 'final') return state.final ? saved : 'home';
   if (saved.startsWith('match:')) return bracket && findMatch(bracket, saved.slice(6)) ? saved : 'home';
   if (saved.startsWith('player:')) return state.people[saved.slice(7)] ? saved : 'players';
+  // Менять настройки и название может только организатор.
+  if (saved === 'rename') return isOrganizer(state, holder) ? saved : 'settings';
+  if (saved.startsWith('setting:')) return isOrganizer(state, holder) && isSettingKey(saved.slice(8)) ? saved : 'settings';
   return saved;
 }
 
-function screen(state: TournamentState, current: PanelScreen): Screen {
+function screen(state: TournamentState, current: PanelScreen, holder: UserId): Screen {
   if (current.startsWith('match:')) return matchScreen(state, current.slice(6));
   if (current.startsWith('player:')) return playerScreen(state, current.slice(7));
+  if (current.startsWith('setting:')) return settingScreen(state, current.slice(8));
   switch (current) {
     case 'intake':
       return withBack(sessionPanel(renderIntake(state.intake), 'intake'));
@@ -103,7 +121,9 @@ function screen(state: TournamentState, current: PanelScreen): Screen {
     case 'players':
       return playersScreen(state);
     case 'settings':
-      return settingsScreen(state);
+      return settingsScreen(state, holder);
+    case 'rename':
+      return renameScreen(state);
     default:
       return homeScreen(state);
   }
@@ -276,14 +296,16 @@ function matchScreen(state: TournamentState, matchId: string): Screen {
     }
   }
 
-  const menu = state.adminMenu;
+  // Меню общее на всех админов, поэтому «Засчитать» несёт матч и победителя: нажатие засчитает
+  // то, что видел нажавший, даже если другой админ успел открыть меню другого матча.
+  const menu = techCandidates(state).includes(matchId) ? state.adminMenu : null;
   const name = (id: UserId) => participant(state, id).name;
   if (menu?.kind === 'techWinner' && menu.matchId === matchId && players) {
     lines.push('', '⚖️ Кому засчитать техническую победу?');
     buttons.push(players.map((id) => ({ label: `🏆 ${name(id)}`, data: `o:techWin:${matchId}:${id}` })), [CANCEL]);
   } else if (menu?.kind === 'techConfirm' && menu.matchId === matchId) {
     lines.push('', `⚖️ Засчитать техническую победу: ${name(menu.winner)}?`, 'Матч закроется, игрокам и судье придёт уведомление. Отменить нельзя.');
-    buttons.push([{ label: '✅ Засчитать', data: 'o:techOk' }, CANCEL]);
+    buttons.push([{ label: '✅ Засчитать', data: `o:techOk:${matchId}:${menu.winner}` }, CANCEL]);
   } else if (techCandidates(state).includes(matchId)) {
     buttons.push([{ label: '⚖️ Техническая победа', data: `o:techMatch:${matchId}` }]);
   }
@@ -336,7 +358,7 @@ function playerScreen(state: TournamentState, id: UserId): Screen {
   const menu = state.adminMenu;
   if (menu?.kind === 'withdrawConfirm' && menu.userId === id) {
     lines.push('', `🚪 Снять ${person.name} с турнира?`, 'Текущий матч засчитается сопернику, в каждом следующем — техническое поражение. Отменить нельзя.');
-    buttons.push([{ label: '🚪 Снять', data: 'o:withdrawOk' }, CANCEL]);
+    buttons.push([{ label: '🚪 Снять', data: `o:withdrawOk:${id}` }, CANCEL]);
   } else if (state.phase === 'qualifiers' && draw?.bracket && withdrawCandidates(state).includes(id)) {
     buttons.push([{ label: '🚪 Снять с турнира', data: `o:withdrawPick:${id}` }]);
   }
@@ -353,8 +375,9 @@ function shortStatus(state: TournamentState, id: UserId): string {
     return `${songsOnly ? '🎁 только песни · ' : ''}песен: ${acceptedCount(state.intake, id)} из ${state.config.intakeRules.maxSubmissions}`;
   }
   if (songsOnly) return '🎁 только песни';
+  // Вышедший до жеребьёвки уже не в списке игроков — поэтому проверка раньше.
+  if (state.withdrawn.includes(id)) return hasLeft(state, id) ? '🚪 вышел сам' : '🚪 снятие с турнира';
   if (!draw?.config.players.some((p) => p.id === id)) return 'не играет';
-  if (state.withdrawn.includes(id)) return state.left?.includes(id) ? '🚪 вышел сам' : '🚪 снятие с турнира';
   const champion = state.final && qualified(state.final.bracket, state.final.results)[0];
   if (champion === id) return '🏆 победитель';
   if (!draw.bracket) return 'ждёт жеребьёвки';
@@ -373,27 +396,35 @@ export function settingsText(state: TournamentState): string {
     `⚙️ Настройки · ${config.title}`,
     `Ссылка-приглашение: https://t.me/${config.botUsername}?start=t_${config.code}`,
     '',
-    `Финалистов: ${config.finalists}`,
-    `Песен на игрока: до ${config.intakeRules.maxSubmissions}`,
-    `Длина фрагмента: ${config.fragmentSec} с`,
-    `Финальный пул: ${config.finalPoolTarget} ${plural(config.finalPoolTarget, 'песня', 'песни', 'песен')}`,
-    `Срок круга: ${config.roundDays} ${plural(config.roundDays, 'день', 'дня', 'дней')}`,
-    `Отбор: ${rulesetText(config.qualifierRuleset)}`,
-    `Финал: ${rulesetText(config.finalRuleset)}`,
+    ...SETTING_KEYS.map((key) => settingLine(state, key)),
     `Seed: ${config.seed}`,
   ].join('\n');
 }
 
-function settingsScreen(state: TournamentState): Screen {
-  const text = [settingsText(state), '', 'Настройки задаются при создании турнира.', 'Переименовать: /rename <название>.'].join('\n');
-  return withBack({ text, buttons: [] });
+// Организатор меняет настройки кнопками; 🔒 — настройка уже разошлась по сбору, сетке или матчам.
+function settingsScreen(state: TournamentState, holder: UserId): Screen {
+  if (!isOrganizer(state, holder)) return withBack({ text: `${settingsText(state)}\n\nМенять настройки может организатор.`, buttons: [] });
+  const open = SETTING_KEYS.filter((key) => !lockReason(state, key));
+  const hint = open.length > 0 ? 'Нажмите настройку, чтобы поменять. 🔒 — уже не поменять.' : 'Все настройки, кроме названия, уже застыли.';
+  const buttons: Button[][] = [];
+  for (let i = 0; i < open.length; i += 2) {
+    buttons.push(open.slice(i, i + 2).map((key) => ({ label: settingName(key), data: `o:set:${key}` })));
+  }
+  buttons.push([{ label: '✏️ Переименовать', data: 'o:v:rename' }]);
+  return withBack({ text: `${settingsText(state)}\n\n${hint}`, buttons });
 }
 
-function rulesetText(ruleset: Ruleset): string {
-  const { format } = ruleset;
-  const length =
-    format.kind === 'fixed'
-      ? `${format.tracks} ${plural(format.tracks, 'трек', 'трека', 'треков')}`
-      : `до ${formatPoints(format.winThreshold)}, не больше ${format.trackLimit} ${plural(format.trackLimit, 'трека', 'треков', 'треков')}`;
-  return `${length}; исполнитель ${formatPoints(ruleset.artistPoints)}, название ${formatPoints(ruleset.titlePoints)}`;
+function settingScreen(state: TournamentState, key: string): Screen {
+  if (!isSettingKey(key)) return { text: '—', buttons: [[SETTINGS_BACK]] };
+  const { lines, options } = settingChoice(state, key);
+  const buttons: Button[][] = [];
+  for (let i = 0; i < options.length; i += 3) {
+    buttons.push(options.slice(i, i + 3).map((o) => ({ label: o.label, data: `o:set:${key}:${o.value}` })));
+  }
+  return { text: lines.join('\n'), buttons: [...buttons, [SETTINGS_BACK]] };
+}
+
+function renameScreen(state: TournamentState): Screen {
+  const text = ['✏️ Переименовать турнир', `Сейчас: «${state.config.title}»`, '', 'Пришлите новое название сообщением — от 2 до 48 символов.'].join('\n');
+  return { text, buttons: [[{ label: 'Отмена', data: 'o:v:settings' }]] };
 }

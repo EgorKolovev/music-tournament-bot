@@ -1,8 +1,8 @@
-import { eliminated, qualifiedIds } from '../bot/drawSession.ts';
+import { eliminated, removePlayer } from '../bot/drawSession.ts';
 import { isSongsOnly, leaveIntake } from '../bot/intakeSession.ts';
 import type { Button, Outgoing, OutgoingMessage, UserId } from '../bot/protocol.ts';
 import { isParticipant, message, panelHolders, say, scope, toast } from './helpers.ts';
-import { leaveTournament } from './organizer.ts';
+import { withdraw } from './organizer.ts';
 import { finalistIds } from './stages.ts';
 import type { Step, TournamentState } from './state.ts';
 
@@ -26,10 +26,16 @@ function leaveOf(state: TournamentState, id: UserId): Leave {
   }
   const draw = state.draw;
   if (state.phase === 'qualifiers' && draw) {
-    if (!draw.config.players.some((p) => p.id === id)) return no('Ты не играешь в турнире — выходить не из чего.');
-    if (!draw.bracket) return { kind: 'draw' };
     if (state.withdrawn.includes(id)) return no('Ты уже не в турнире.');
-    if (qualifiedIds(draw).includes(id)) return no(FINALIST);
+    if (!draw.config.players.some((p) => p.id === id)) return no('Ты не играешь в турнире — выходить не из чего.');
+    if (!draw.bracket) {
+      // Сетку строят минимум на столько игроков, сколько мест в финале.
+      if (draw.config.players.length - 1 < state.config.finalists) {
+        return no('Без тебя игроков станет меньше, чем мест в финале, и жеребьёвку не провести. Если не можешь играть — напиши организатору.');
+      }
+      return { kind: 'draw' };
+    }
+    if (finalistIds(state).includes(id)) return no(FINALIST);
     if (eliminated(draw, id)) return no('Отбор для тебя уже закончен — выходить не из чего.');
     return { kind: 'bracket' };
   }
@@ -44,14 +50,23 @@ const QUESTION: Record<Exclude<Leave['kind'], 'no'>, string> = {
     '🚪 Точно выходишь из турнира? Текущий матч засчитается сопернику, в следующих парах — техническое поражение. Отменить нельзя. Судить по-прежнему можно.',
 };
 
+// Выход отменяется, только пока сбор открыт: передумать можно кнопкой под списком песен.
+// Иначе он необратим, и перед ним второй шаг.
+function reversible(state: TournamentState, leave: Leave): boolean {
+  return leave.kind === 'intake' && !state.intake.closed;
+}
+
 export function askLeave(state: TournamentState, id: UserId): Step {
   const leave = leaveOf(state, id);
   if (leave.kind === 'no') return say(state, id, leave.text);
-  const closed = leave.kind === 'intake' && state.intake.closed;
-  const text = leave.kind === 'intake' && !closed ? `${QUESTION.intake}\nПередумать можно, пока идёт сбор, — кнопкой под списком песен.` : QUESTION[leave.kind];
+  let text = QUESTION[leave.kind];
+  if (leave.kind === 'intake') {
+    text += reversible(state, leave) ? '\nПередумать можно, пока идёт сбор, — кнопкой под списком песен.' : '\nСбор уже закрыт — вернуться будет нельзя.';
+  }
+  // Этап — в данных кнопки: если он сменится, пока человек думает, бот спросит заново.
   const buttons: Button[][] = [
     [
-      { label: '🚪 Да, выхожу', data: 'l:ok' },
+      { label: '🚪 Да, выхожу', data: `l:ok:${leave.kind}` },
       { label: 'Остаться', data: 'l:cancel' },
     ],
   ];
@@ -61,15 +76,20 @@ export function askLeave(state: TournamentState, id: UserId): Step {
 export function leaveButton(state: TournamentState, id: UserId, data: string): Step {
   const reply = (text: string): OutgoingMessage => ({ kind: 'message', to: id, slot: SLOT, text });
   if (data === 'cancel') return { state, out: [reply('Остаёшься в турнире 👍')] };
-  if (data !== 'ok' && data !== 'final') return toast(state, id, 'Кнопка устарела');
+  const action = /^(ok|final)(?::(\w+))?$/.exec(data);
+  if (!action) return toast(state, id, 'Кнопка устарела');
+  const [, step, asked] = action;
 
   const leave = leaveOf(state, id);
   if (leave.kind === 'no') return { state, out: [reply(leave.text)] };
-  if (leave.kind !== 'intake' && data === 'ok') {
+  if (asked !== undefined && asked !== leave.kind) return askLeave(state, id);
+  // l:ok без этапа — из сообщений прошлой версии: там второго шага не было на всём сборе.
+  const final = asked === undefined ? leave.kind !== 'intake' : !reversible(state, leave);
+  if (step === 'ok' && final) {
     const text = '⚠️ Последний шаг. Вернуться в турнир будет нельзя — ни тебе, ни организатору. Выходишь?';
     const buttons: Button[][] = [
       [
-        { label: '🚪 Выйти окончательно', data: 'l:final' },
+        { label: '🚪 Выйти окончательно', data: `l:final:${leave.kind}` },
         { label: 'Остаться', data: 'l:cancel' },
       ],
     ];
@@ -92,18 +112,25 @@ export function leaveButton(state: TournamentState, id: UserId, data: string): S
     };
   }
   if (leave.kind === 'draw') {
-    const draw = state.draw!;
-    const players = draw.config.players.filter((p) => p.id !== id);
+    const removed = removePlayer(state.draw!, id);
+    // В сетке его нет, но в «Участниках» и /status он — «вышел сам», как и вышедшие с отбора.
+    const next: TournamentState = {
+      ...state,
+      draw: removed.session,
+      withdrawn: [...state.withdrawn, id],
+      left: [...(state.left ?? []), id],
+      journal: [...state.journal, `Вышел из турнира до жеребьёвки: ${person.name}`],
+    };
     return {
-      state: {
-        ...state,
-        draw: { ...draw, config: { ...draw.config, players } },
-        journal: [...state.journal, `Вышел из турнира до жеребьёвки: ${person.name}`],
-      },
-      out: [reply('🚪 Ты вышел из турнира — в жеребьёвку не попадёшь. Судить по-прежнему можно.'), ...notify(`🚪 ${who} вышел из турнира до жеребьёвки.`)],
+      state: next,
+      out: [
+        reply('🚪 Ты вышел из турнира — в жеребьёвку не попадёшь. Судить по-прежнему можно.'),
+        ...scope(next, removed.out, 'd:'),
+        ...notify(`🚪 ${who} вышел из турнира до жеребьёвки.`),
+      ],
     };
   }
-  const left = leaveTournament(state, id);
+  const left = withdraw(state, id, 'self');
   return {
     state: left.state,
     out: [reply('🚪 Ты вышел из турнира. Спасибо за игру! Судить по-прежнему можно.'), ...left.out, ...notify(`🚪 ${who} вышел из турнира сам.`)],

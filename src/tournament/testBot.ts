@@ -2,11 +2,12 @@ import { applyOutgoing, type Chat, type Chats } from '../bot/chat.ts';
 import { limitViolations, type Outgoing, type UserId } from '../bot/protocol.ts';
 import { QUALIFIER_RULESET, FINAL_RULESET } from '../domain/match/ruleset.ts';
 import { DEFAULT_INTAKE_RULES, type AudioFile } from '../domain/submission/intake.ts';
-import type { TournamentEvent } from './events.ts';
-import { createTournament, handleEvent, type TournamentConfig, type TournamentState } from './tournament.ts';
+import { activeTournament, createBot, handleBotEvent, type BotState } from './bot.ts';
+import type { StampedEvent, TournamentEvent } from './events.ts';
+import type { TournamentConfig, TournamentState } from './tournament.ts';
 
-// Тестовый стенд оркестратора: прогоняет события и ведёт чаты так, как их увидит Telegram
-// (правка по slot, перенос вниз по bump). Кнопки нажимаются только видимые.
+// Тестовый стенд оркестратора: прогоняет события через весь бот (все турниры) и ведёт чаты так,
+// как их увидит Telegram (правка по slot, перенос вниз по bump). Кнопки нажимаются только видимые.
 
 export const ORGANIZER = '900';
 
@@ -30,7 +31,9 @@ export function testConfig(overrides: Partial<TournamentConfig> = {}): Tournamen
 }
 
 export class TestBot {
-  state: TournamentState;
+  bot: BotState;
+  // Журнал, как его пишет Runtime: повтор даёт то же состояние.
+  events: StampedEvent[] = [];
   chats: Chats = {};
   toasts: { to: UserId; text: string }[] = [];
   outLog: Outgoing[] = [];
@@ -38,15 +41,26 @@ export class TestBot {
   private nextId = 1;
 
   constructor(config = testConfig()) {
-    const created = createTournament(config);
-    this.state = created.state;
+    const created = createBot(config, this.now);
+    this.bot = created.state;
     this.apply(created.out);
+  }
+
+  // Активный турнир.
+  get state(): TournamentState {
+    return activeTournament(this.bot);
+  }
+
+  set state(state: TournamentState) {
+    this.bot = { ...this.bot, tournaments: this.bot.tournaments.map((t, i) => (i === this.bot.active - 1 ? { ...t, state } : t)) };
   }
 
   send(event: TournamentEvent, advanceMs = 1000): Outgoing[] {
     this.now += advanceMs;
-    const step = handleEvent(this.state, { at: this.now, event });
-    this.state = step.state;
+    const stamped = { at: this.now, event };
+    const step = handleBotEvent(this.bot, stamped);
+    this.events.push(stamped);
+    this.bot = step.state;
     this.apply(step.out);
     return step.out;
   }

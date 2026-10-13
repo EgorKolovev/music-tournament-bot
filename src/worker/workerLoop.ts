@@ -25,7 +25,7 @@ export interface WorkerLoopOptions {
 
 // Режим AUDIO_MODE=skip: без ffmpeg файл считается годным, судья видит заглушку вместо плеера.
 export async function skipProcessor(job: AudioJob): Promise<AudioResult> {
-  return { submissionId: job.submissionId, ok: true, startSec: job.startSec };
+  return { submissionId: job.submissionId, ok: true, startSec: job.startSec, fragmentSec: job.fragmentSec };
 }
 
 export class WorkerLoop {

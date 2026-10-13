@@ -14,13 +14,16 @@ export interface AudioJob {
   sizeBytes?: number;
   // С какой секунды резать фрагмент; 0 — с начала песни после тишины.
   startSec: number;
+  // Длина фрагмента турнира, чья это песня. У задач прошлых версий нет — длина по умолчанию.
+  fragmentSec?: number;
 }
 
 export interface AudioResult {
   submissionId: string;
   ok: boolean;
-  // Начало из задачи: по нему ядро отличает устаревший результат.
+  // Начало и длина фрагмента из задачи: по ним ядро отличает устаревший результат.
   startSec: number;
+  fragmentSec?: number;
   gameFileId?: string;
   // Длительность исходного файла по ffprobe.
   durationSec?: number;
@@ -48,13 +51,14 @@ const GAME_PERFORMER = 'Музыкальный турнир';
 export function createAudioProcessor(deps: AudioProcessorDeps): (job: AudioJob) => Promise<AudioResult> {
   const ffmpeg = deps.ffmpegPath ?? 'ffmpeg';
   const ffprobe = deps.ffprobePath ?? 'ffprobe';
-  const fragmentSec = deps.fragmentSec ?? 60;
   const timeoutMs = deps.timeoutMs ?? 120_000;
 
   return async (job) => {
+    const fragmentSec = job.fragmentSec ?? deps.fragmentSec ?? 60;
+    const { submissionId, startSec: requested } = job;
     const fail = (reason: string, durationSec?: number): AudioResult => {
-      deps.log.warn(`аудио ${job.submissionId}: ${reason}`);
-      return { submissionId: job.submissionId, ok: false, startSec: job.startSec, reason, durationSec };
+      deps.log.warn(`аудио ${submissionId}: ${reason}`);
+      return { submissionId, ok: false, startSec: requested, fragmentSec: job.fragmentSec, reason, durationSec };
     };
     if (job.sizeBytes !== undefined && job.sizeBytes > MAX_DOWNLOAD_BYTES) return fail('too_large');
 
@@ -110,9 +114,10 @@ export function createAudioProcessor(deps: AudioProcessorDeps): (job: AudioJob) 
       });
       if (!sent.audio?.file_id) throw new Error(`sendAudio без audio.file_id для ${job.submissionId}`);
       return {
-        submissionId: job.submissionId,
+        submissionId,
         ok: true,
-        startSec: job.startSec,
+        startSec: requested,
+        fragmentSec: job.fragmentSec,
         gameFileId: sent.audio.file_id,
         durationSec: probe.durationSec,
       };

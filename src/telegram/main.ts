@@ -104,7 +104,8 @@ async function main(): Promise<void> {
     onJobs: () => worker.loop?.kick(),
   });
   const { config } = runtime.state;
-  log.info(`@${me.username}: «${config.title}», этап ${runtime.state.phase}, аудио ${settings.audioMode}`);
+  const others = runtime.bot.tournaments.length - 1;
+  log.info(`@${me.username}: «${config.title}», этап ${runtime.state.phase}, аудио ${settings.audioMode}${others > 0 ? `, ещё турниров на паузе: ${others}` : ''}`);
   log.info(`приглашение: https://t.me/${me.username}?start=t_${config.code}`);
 
   worker.loop = new WorkerLoop({
@@ -117,7 +118,7 @@ async function main(): Promise<void> {
             downloadFile,
             serviceChatId: settings.serviceChatId!,
             tmpDir: settings.tmpDir,
-            // Длина фрагмента — параметр турнира, зафиксированный в базе при первом запуске.
+            // Длина фрагмента приходит в каждой задаче — у каждого турнира своя; эта — для задач прошлых версий.
             fragmentSec: config.fragmentSec,
             ffmpegPath: settings.ffmpegPath,
             ffprobePath: settings.ffprobePath,

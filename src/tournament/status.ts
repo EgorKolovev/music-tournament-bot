@@ -3,7 +3,7 @@ import { matchTitle as finalMatchTitle } from '../bot/finalSession.ts';
 import { acceptedCount, isSongsOnly } from '../bot/intakeSession.ts';
 import type { UserId } from '../bot/protocol.ts';
 import { openMatches, playedMatches, playersOf, qualified, resolveSlot } from '../domain/bracket/bracket.ts';
-import { matchTitle, participant, scoreLine } from './helpers.ts';
+import { hasLeft, matchTitle, participant, scoreLine } from './helpers.ts';
 import { finalistIds } from './stages.ts';
 import type { TournamentState } from './state.ts';
 
@@ -31,10 +31,11 @@ export function personalStatus(state: TournamentState, id: UserId): string[] {
 
 function qualifierStatus(state: TournamentState, id: UserId): string[] {
   const draw = state.draw!;
-  if (!draw.bracket) return ['🎲 Жеребьёвка ещё не проведена.'];
+  const withdrawn = state.withdrawn.includes(id) ? [hasLeft(state, id) ? '🚪 Ты вышел из турнира.' : '🚪 Ты снят с турнира.'] : [];
+  if (!draw.bracket) return [...withdrawn, '🎲 Жеребьёвка ещё не проведена.'];
   const lines: string[] = [];
   if (isSongsOnly(state.intake, id)) lines.push('🎁 Твои песни в игре, сам ты не играешь.');
-  if (state.withdrawn.includes(id)) lines.push(state.left?.includes(id) ? '🚪 Ты вышел из турнира.' : '🚪 Ты снят с турнира.');
+  if (withdrawn.length > 0) lines.push(...withdrawn);
   else if (draw.config.players.some((p) => p.id === id)) lines.push(ownMatchLine(state, id));
 
   for (const match of playedMatches(draw.bracket)) {

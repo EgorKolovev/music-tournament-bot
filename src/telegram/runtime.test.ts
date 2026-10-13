@@ -1,7 +1,9 @@
+import { unzipSync } from 'fflate';
+import type { InputFile } from 'grammy';
 import type { InlineKeyboardMarkup, Update } from 'grammy/types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { matchPlayers } from '../bot/drawSession.ts';
-import { Store } from '../storage/store.ts';
+import { importTournament, Store, type TournamentDump } from '../storage/store.ts';
 import { testDatabase, type TestDatabase } from '../storage/testDatabase.ts';
 import { ORGANIZER, testConfig } from '../tournament/testBot.ts';
 import { buttonUpdate, FakeApi, privateChat, silentLog, textUpdate, user } from './fakeApi.ts';
@@ -220,6 +222,61 @@ describe('Runtime на PostgreSQL (PGlite)', () => {
     expect(after.kind === 'track' && after.track.awards).toEqual({ artist: 0, title: 1 });
     // Панель правится в том же сообщении — slot → message_id пережил перезапуск.
     expect(api.calls.filter((c) => c.method === 'editMessageText').length).toBeGreaterThan(editsBefore);
+  });
+
+  it('несколько турниров: переживают перезапуск, задачи аудио — с префиксом, пустой tick не в журнале', async () => {
+    const db = database();
+    const { api, store, runtime } = await boot(db);
+    const org = user(Number(ORGANIZER), 'Орг');
+    await runtime.receive(textUpdate(org, '/start'));
+    await press(api, runtime, Number(ORGANIZER), 't:list');
+    await press(api, runtime, Number(ORGANIZER), 't:new');
+    await runtime.receive(textUpdate(org, 'Проба'));
+    await press(api, runtime, Number(ORGANIZER), 't:create');
+    const { code } = runtime.state.config;
+    await runtime.receive(textUpdate(user(1, 'Игрок 1'), `/start t_${code}`));
+    await press(api, runtime, 1, '2~r:name');
+    await press(api, runtime, 1, '2~r:accept');
+    await runtime.receive(audioUpdate(1, 0));
+    await runtime.idle();
+    expect(await store.claim()).toMatchObject({ submissionId: '2~s1', fragmentSec: 60 });
+
+    const events = async () => (await db.query<{ n: number }>('SELECT count(*)::int AS n FROM events')).rows[0]!.n;
+    const before = await events();
+    await runtime.tick();
+    expect(await events()).toBe(before);
+
+    // Падение процесса: снимка нет, бот повторяет журнал с самого начала.
+    const restarted = await boot(db, api);
+    expect(restarted.runtime.bot.active).toBe(2);
+    expect(restarted.runtime.state.people['1']?.number).toBe(1);
+    expect(restarted.runtime.bot.tournaments[0]!.state.people['1']).toBeUndefined();
+    await restarted.runtime.workerResult({ submissionId: '2~s1', ok: true, startSec: 0, fragmentSec: 60 });
+    expect(restarted.runtime.state.intake.intake.submissions[0]!.processing).toBe('ok');
+  });
+
+  it('копия базы организатору: ZIP с тем же, что сохраняет db:backup, и из него поднимается бот', async () => {
+    const { api, runtime } = await boot();
+    await runtime.receive(textUpdate(user(1, 'Игрок 1'), '/start t_test'));
+    await press(api, runtime, 1, 'r:name');
+    await press(api, runtime, 1, 'r:accept');
+    await press(api, runtime, Number(ORGANIZER), 'o:v:settings');
+    await press(api, runtime, Number(ORGANIZER), 't:copy:now');
+    await runtime.idle();
+
+    const sent = api.calls.findLast((c) => c.method === 'sendDocument')!;
+    expect(sent.params.chat_id).toBe(ORGANIZER);
+    const file = sent.params.document as InputFile;
+    expect(file.filename).toMatch(/^tournament-20261010-\d{6}\.zip$/);
+    const [json] = Object.values(unzipSync((await file.toRaw()) as Uint8Array));
+    const dump = JSON.parse(new TextDecoder().decode(json)) as TournamentDump;
+    expect(dump).toMatchObject({ format: 'music-tournament', title: 'Тестовый турнир' });
+
+    // Восстановление в чистую базу: бот поднимается с тем же участником.
+    const copy = database();
+    await importTournament(copy, dump);
+    const restored = await boot(copy);
+    expect(restored.runtime.state.people['1']?.number).toBe(1);
   });
 
   it('сбой отправки не теряет сообщение: outbox досылается после восстановления', async () => {

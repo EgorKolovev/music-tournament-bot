@@ -7,8 +7,9 @@ import type { TournamentConfig } from '../tournament/tournament.ts';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-// Настройки бота из переменных окружения (пример — .env.example). Параметры турнира фиксируются
-// в базе при первом запуске; organizer, админы и username бота берутся из окружения каждый раз.
+// Настройки бота из переменных окружения (пример — .env.example). Параметры турнира — значения для
+// первого турнира при первом запуске, дальше их меняет организатор в панели; organizer, админы
+// и username бота берутся из окружения каждый раз.
 
 export interface BotSettings {
   token: string;
