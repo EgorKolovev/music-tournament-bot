@@ -11,9 +11,11 @@ permissions:
   pages: write
   id-token: write
 
+# Идущий деплой не прерываем: если оборвать его посреди Deploy, Pages может
+# держать его «в процессе» и отклонять следующие. Новый пуш подождёт в очереди.
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -58,4 +60,4 @@ jobs:
 
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
