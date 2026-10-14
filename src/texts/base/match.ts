@@ -1,8 +1,10 @@
 import { plural } from '../../shared/text.ts';
-import { pick, pickWith } from '../variants.ts';
+import { pickWith } from '../variants.ts';
 
 // Матч — отборочный и финальный: панель судьи и сообщение игроку о ходе матча.
 // points — уже отформатированные баллы («1,5»), score — строка счёта «Аня 2,5 : 1,0 Борис».
+// Номер трека или матча у фраз, которые повторяются от трека к треку и от матча к матчу, — только для
+// выбора варианта: в стилях на новом треке или матче выпадает другой, а перерисовка панели его не меняет.
 
 export const match = {
   judge: {
@@ -16,7 +18,7 @@ export const match = {
     fewSongs: ({ available, needed }: { available: number; needed: number }) =>
       `⚠️ Подходящих песен ${available}, а нужно хотя бы ${needed}. Напиши организатору.`,
     allHere: 'Все на месте ✅',
-    paused: '⏸ Пауза',
+    paused: pickWith<{ n: number }>('⏸ Пауза'),
     startAt: ({ start }: { start: string }) => `Включи с ${start}`,
     answers: ({ n }: { n: number }) => `🔒 Ответы · трек ${n}`,
     artist: ({ artist }: { artist: string }) => `Исполнитель: ${artist}`,
@@ -29,12 +31,12 @@ export const match = {
     nobody: pickWith<{ n: number }>('Непростой трек — бывает.', 'Сложный попался, бывает.', 'Этот трек оказался непростым.'),
     playing: ({ n }: { n: number }) => `▶️ Трек ${n} идёт`,
     ready: ({ n }: { n: number }) => `Трек ${n} готов`,
-    startHint: 'Аудио и ответы — выше. Включи трек и нажми «Начать трек».',
+    startHint: pickWith<{ n: number }>('Аудио и ответы — выше. Включи трек и нажми «Начать трек».'),
     played: ({ played, of }: { played: number; of: number }) => `Сыграно ${played} из ${of}`,
     extra: ({ n }: { n: number }) => `Ничья — дополнительный трек ${n}`,
     winner: ({ name }: { name: string }) => `🏁 Победа: ${name}`,
     waitConfirm: ({ names }: { names: string }) => `Ждём подтверждения: ${names}`,
-    confirm: 'Подтверди результат матча.',
+    confirm: pickWith<{ match: string }>('Подтверди результат матча.'),
     confirmed: ({ name }: { name: string }) => `✅ Результат подтверждён. Победа: ${name}`,
     suspended: '⛔ Подходящие песни закончились — матч остановлен, дальше решает организатор.',
   },
@@ -42,8 +44,8 @@ export const match = {
   player: {
     header: ({ match, opponent, judge }: { match: string; opponent: string; judge: string }) =>
       `Матч №${match} · соперник: ${opponent} · судья: ${judge}`,
-    here: pick('✅ Ты на месте, ждём остальных', '✅ Отметил, что ты на месте. Ждём остальных'),
-    comeIn: pick('Как доберёшься до места — нажми «Я на месте».', 'Когда будешь на месте — нажми «Я на месте».'),
+    here: pickWith<{ match: string }>('✅ Ты на месте, ждём остальных', '✅ Отметил, что ты на месте. Ждём остальных'),
+    comeIn: pickWith<{ match: string }>('Как доберёшься до места — нажми «Я на месте».', 'Когда будешь на месте — нажми «Я на месте».'),
     played: ({ count }: { count: number }) => `Сыграно треков: ${count}`,
     winner: ({ name }: { name: string }) => `🏁 Победа: ${name}`,
     waitJudge: 'Ждём подтверждения судьи.',

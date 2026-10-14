@@ -43,7 +43,7 @@ export function renderExtras(state: TournamentState): OutgoingMessage[] {
       const texts = textsTo(state, player.id).events.dispute;
       let text: string;
       let buttons: Button[][] | undefined;
-      if (runtime.dispute) text = runtime.dispute.by === player.id ? texts.mine : texts.theirs;
+      if (runtime.dispute) text = (runtime.dispute.by === player.id ? texts.mine : texts.theirs)({ match: config.matchNo });
       else if (runtime.closed || confirmed) text = texts.recorded({ match: config.matchNo });
       else {
         text = texts.offer({ match: config.matchNo });

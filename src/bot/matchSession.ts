@@ -293,7 +293,7 @@ function lobbyText(session: MatchSession): string {
   } else {
     lines.push('', texts.allHere);
   }
-  if (match.paused && session.issued.length === 0) lines.push('', texts.paused);
+  if (match.paused && session.issued.length === 0) lines.push('', texts.paused({ n: 0 }));
   return lines.join('\n');
 }
 
@@ -351,7 +351,7 @@ function currentPanelText(session: MatchSession): string {
     if (phase.track.started) {
       lines.push(awardsLine(session, phase.track.awards));
     } else {
-      lines.push('', texts.startHint);
+      lines.push('', texts.startHint({ n: last.number }));
     }
   } else {
     const played = match.closedTracks.length;
@@ -363,7 +363,7 @@ function currentPanelText(session: MatchSession): string {
     lines.push(pastTrackText(session, session.issued.length - 1, progress));
     lines.push(...outcomeLines(session));
   }
-  if (match.paused) lines.push('', texts.paused);
+  if (match.paused) lines.push('', texts.paused({ n: session.issued.length }));
   return lines.join('\n');
 }
 
@@ -382,7 +382,7 @@ function outcomeLines(session: MatchSession): string[] {
         '',
         texts.winner({ name: session.config.players[phase.winner].name }),
         scoreLine(session, score),
-        phase.judgeConfirmed ? texts.waitConfirm({ names: pending.join(', ') }) : texts.confirm,
+        phase.judgeConfirmed ? texts.waitConfirm({ names: pending.join(', ') }) : texts.confirm({ match: session.config.matchNo }),
       ];
     }
     case 'finished':
@@ -453,8 +453,8 @@ function renderPlayerStatus(session: MatchSession, slot: PlayerSlot): Draft {
   switch (phase.kind) {
     case 'lobby':
       return phase.playersReady[slot]
-        ? message('status', `${header}\n\n${texts.here}${paused}`)
-        : message('status', `${header}\n\n${texts.comeIn}${paused}`, [[{ label: buttons.here, data: 'ready' }]]);
+        ? message('status', `${header}\n\n${texts.here({ match: config.matchNo })}${paused}`)
+        : message('status', `${header}\n\n${texts.comeIn({ match: config.matchNo })}${paused}`, [[{ label: buttons.here, data: 'ready' }]]);
     case 'between_tracks':
     case 'track':
       return message('status', `${header}\n\n${texts.played({ count: match.closedTracks.length })}\n${score}${paused}`);

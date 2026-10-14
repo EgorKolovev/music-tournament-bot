@@ -1,4 +1,3 @@
-import { hashText } from '../shared/random.ts';
 import { base } from './base/index.ts';
 import { disco } from './disco/index.ts';
 import { rude } from './rude/index.ts';
@@ -97,11 +96,11 @@ function resolve(shape: unknown, override: unknown, path: string, viewer: string
     const options = optionsOf(override ?? shape);
     const takesParams = typeof shape === 'function' || (isVariants(shape) && shape.params);
     if (!takesParams) {
-      const option = options[hashText(`${viewer}|${path}`) % options.length]!;
+      const option = options[variantIndex(`${viewer}|${path}`, options.length)]!;
       return typeof option === 'function' ? option({}) : option;
     }
     return (params: object) => {
-      const option = options[hashText(`${viewer}|${path}|${JSON.stringify(params)}`) % options.length]!;
+      const option = options[variantIndex(`${viewer}|${path}|${JSON.stringify(params)}`, options.length)]!;
       return typeof option === 'function' ? option(params) : option;
     };
   }
@@ -111,6 +110,17 @@ function resolve(shape: unknown, override: unknown, path: string, viewer: string
     result[key] = resolve(value, patch[key], path ? `${path}.${key}` : key, viewer);
   }
   return result;
+}
+
+// Номер варианта по ключу: FNV-1a и перемешивание битов, как в MurmurHash3, — соседние номера
+// матчей и треков дают несвязанные варианты, а не идут по кругу. Общий hashText здесь не годится:
+// он линейный, а поменять его нельзя — от него зависят посев матчей и начало фрагментов.
+function variantIndex(key: string, count: number): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 0x01000193);
+  h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+  return ((h ^ (h >>> 16)) >>> 0) % count;
 }
 
 type Option = string | ((p: object) => string);

@@ -336,7 +336,8 @@ function renderPlayer(session: DrawSession, userId: UserId): OutgoingMessage[] {
     messages.push({ kind: 'message', to: userId, slot: 'card', text: texts.card.eliminated });
   } else if (bye && !session.results[bye.id]) messages.push(byeCard(session, userId, bye));
   else if (isPlayer && waitingOpponent(session, userId)) {
-    messages.push({ kind: 'message', to: userId, slot: 'card', text: texts.card.waitOpponent });
+    const round = Object.values(session.results).filter((id) => id === userId).length + 1;
+    messages.push({ kind: 'message', to: userId, slot: 'card', text: texts.card.waitOpponent({ round }) });
   }
 
   // Приглашения судить чужой матч.
@@ -357,7 +358,7 @@ function renderPlayer(session: DrawSession, userId: UserId): OutgoingMessage[] {
           assignment.proposedBy ? invite.from({ by: nameOf(session, assignment.proposedBy), match, a, b }) : invite.anonymous({ match, a, b }),
           until ? invite.until({ until }) : invite.arrange,
           '',
-          invite.songs,
+          invite.songs({ match }),
         ].join('\n'),
         buttons: [
           [
@@ -373,7 +374,7 @@ function renderPlayer(session: DrawSession, userId: UserId): OutgoingMessage[] {
         to: userId,
         slot: `invite:${matchId}`,
         text: ready
-          ? `${invite.ready({ match, a, b, until })}\n${session.config.interactive ? invite.readyDemo : invite.readyPanel}`
+          ? `${invite.ready({ match, a, b, until })}\n${session.config.interactive ? invite.readyDemo : invite.readyPanel({ match })}`
           : invite.accepted({ match, a, b }),
       });
     }
@@ -406,7 +407,7 @@ function matchCard(session: DrawSession, userId: UserId, match: BracketMatch): O
       lines.push(card.judgeLink({ link: `t.me/${session.config.botUsername}?start=judge_${match.id}` }));
       buttons.push([{ label: texts.buttons.cancel, data: 'cancel' }]);
     } else {
-      lines.push(card.arrange);
+      lines.push(card.arrange({ match: matchLabel(match) }));
       buttons.push([{ label: texts.buttons.pickJudge, data: 'pickJudge' }]);
     }
   } else {
