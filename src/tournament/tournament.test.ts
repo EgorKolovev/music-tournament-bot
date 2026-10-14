@@ -1260,6 +1260,20 @@ describe('Стиль текстов (/style)', () => {
     expect(violations(bot.outLog)).toEqual([]);
   });
 
+  it('мат в примерах запикан, пока человек не включил ругательный стиль', () => {
+    const bot = new TestBot();
+    const mat = /ху[йеёяил]|пизд|бля|[её]ба|ёб/i;
+    bot.register('1');
+    bot.command('1', '/style');
+    expect(slotText(bot, '1', 's:style')).toContain(styleOf('rude').sampleBleeped!);
+    expect(slotText(bot, '1', 's:style')).not.toMatch(mat);
+    bot.press('1', 's:set:rude');
+    expect(slotText(bot, '1', 's:style')).not.toMatch(mat);
+
+    bot.press('1', 's:ok:rude');
+    expect(slotText(bot, '1', 's:style')).toContain(styleOf('rude').sample);
+  });
+
   // Каждый стиль проходит турнир от регистрации до архива: все участники в нём, команды и выход тоже.
   it.each(STYLE_IDS)('турнир целиком в стиле %s: без нарушений лимитов Telegram и без undefined', (style) => {
     const bot = new TestBot();

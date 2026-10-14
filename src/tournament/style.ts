@@ -37,7 +37,11 @@ function styleMessage(state: TournamentState, id: UserId): OutgoingMessage {
   const texts = textsTo(state, id).commands.style;
   const current = styleId(state.people[id]?.style);
   const lines = [texts.title, texts.current({ name: styleOf(current).name }), '', texts.about, ''];
-  for (const style of STYLE_IDS) lines.push(`${styleOf(style).name} — «${styleOf(style).sample}»`);
+  // Мат в примере — только тем, кто этот стиль уже выбрал.
+  for (const style of STYLE_IDS) {
+    const { name, sample, sampleBleeped } = styleOf(style);
+    lines.push(`${name} — «${style === current ? sample : (sampleBleeped ?? sample)}»`);
+  }
   const buttons: Button[][] = [];
   for (let i = 0; i < STYLE_IDS.length; i += 2) {
     buttons.push(
