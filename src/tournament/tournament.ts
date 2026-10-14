@@ -10,6 +10,7 @@ import type { Sender, StampedEvent, TournamentEvent } from './events.ts';
 import { canAdmin, intakeStep, isOrganizer, isParticipant, say, scope, textsTo, toast } from './helpers.ts';
 import { adminMenuButton, forfeitWithdrawn } from './organizer.ts';
 import { leaveButton } from './leave.ts';
+import { forgetName, isRenaming, nameButton, nameText } from './name.ts';
 import { adminPanel, renderExtras, resendPanels, retiredNotices } from './panels.ts';
 import { keepResult, matchStep, openDispute, replayMatch, syncMatches } from './qualifiers.ts';
 import { registrationButton, registrationText } from './registration.ts';
@@ -65,7 +66,7 @@ export function createTournament(config: TournamentConfig): Step {
 
 export function handleEvent(state: TournamentState, { at, event }: StampedEvent): Step {
   const before = renderExtras(state);
-  const step = dispatch(refreshSender(state, event), event, at);
+  const step = dispatch(forgetName(refreshSender(state, event), event), event, at);
   // Снятые проигрывают новые пары до того, как для этих пар откроются матчи.
   const forfeits = forfeitWithdrawn(step.state);
   const synced = syncMatches(forfeits.state);
@@ -119,6 +120,7 @@ function dispatch(state: TournamentState, event: TournamentEvent, at: number): S
 
 function handleText(state: TournamentState, from: Sender, text: string, at: number): Step {
   if (state.registration[from.id]) return registrationText(state, from, text);
+  if (isRenaming(state, from.id)) return nameText(state, from.id, text);
   if (isOrganizer(state, from.id) && state.panels?.[from.id] === 'rename') return renameFromPanel(state, from.id, text);
   const waiting = state.panels?.[from.id];
   if (canAdmin(state, from.id) && waiting?.startsWith('bc:') && isAudienceKey(waiting.slice(3))) {
@@ -168,6 +170,8 @@ function handleButton(state: TournamentState, from: Sender, data: string, at: nu
       return leaveButton(state, from.id, rest);
     case 's':
       return styleButton(state, from.id, rest);
+    case 'n':
+      return nameButton(state, from.id);
     case 'x': {
       const dispute = /^dispute:(.+)$/.exec(rest);
       if (dispute) return openDispute(state, from.id, dispute[1]!, at);

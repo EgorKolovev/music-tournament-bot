@@ -101,6 +101,8 @@ export interface TournamentState {
   panels?: Record<UserId, PanelScreen>;
   // Текст рассылки, который админ прислал и ещё не отправил, — по админу.
   broadcastDrafts?: Record<UserId, string>;
+  // Прислали /name без имени: следующее сообщение — новое имя. Снимки прошлых версий поля не содержат.
+  renaming?: UserId[];
   journal: string[];
 }
 

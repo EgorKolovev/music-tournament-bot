@@ -1273,7 +1273,7 @@ describe('Стиль текстов (/style)', () => {
     for (const id of PLAYERS) choose(id);
     for (const id of PLAYERS) bot.submitSongs(id, 10);
     bot.processAudio();
-    for (const command of ['/status', '/matches', '/help', '/nope', '/leave']) bot.command('1', command);
+    for (const command of ['/status', '/matches', '/help', '/nope', '/name Первый', '/leave']) bot.command('1', command);
     bot.press('1', 'l:cancel');
     toDraw(bot);
     bot.command('1', '/status');
@@ -1318,5 +1318,85 @@ describe('Стиль текстов (/style)', () => {
       if (++guard > 10) throw new Error('отбор не сходится');
     }
     expect(violations(bot.outLog)).toEqual([]);
+  });
+});
+
+describe('Смена имени (/name)', () => {
+  const slotText = (bot: TestBot, id: UserId, slot: string) => {
+    const message = bot.chats[id]?.messages.find((m) => m.author === 'bot' && m.slot === slot);
+    return message?.author === 'bot' ? message.text : '';
+  };
+  const texts = textsFor(undefined, '1').commands.name;
+
+  it('«/name Имя» — сразу: имя в карточке человека, в сборе и в журнале; приветствие правится на месте', () => {
+    const bot = new TestBot();
+    bot.register('1');
+    expect(slotText(bot, '1', 'i:welcome')).toContain('Игрок 1');
+
+    bot.command('1', '/name   Аня   К.');
+    expect(bot.state.people['1']!.name).toBe('Аня К.');
+    expect(bot.state.intake.config.participants.find((p) => p.id === '1')!.name).toBe('Аня К.');
+    expect(slotText(bot, '1', 'n:name')).toBe(texts.done({ name: 'Аня К.' }));
+    expect(slotText(bot, '1', 'i:welcome')).toContain('Аня К.');
+    expect(bot.state.journal.at(-1)).toBe('Новое имя: №1 Игрок 1 → Аня К.');
+
+    bot.command('1', '/name Аня К.');
+    expect(slotText(bot, '1', 'n:name')).toBe(texts.same({ name: 'Аня К.' }));
+    expect(violations(bot.outLog)).toEqual([]);
+  });
+
+  it('«/name» из меню: бот ждёт имя сообщением, неподходящее просит прислать ещё раз, «Оставить как есть» — отмена', () => {
+    const bot = new TestBot();
+    bot.register('1');
+    bot.command('1', '/name');
+    expect(slotText(bot, '1', 'n:name')).toBe(texts.ask({ name: 'Игрок 1' }));
+    expect(bot.hasButton('1', 'n:keep')).toBe(true);
+
+    bot.text('1', 'А');
+    expect(bot.lastText('1')).toBe(textsFor(undefined, '1').registration.badName);
+    bot.text('1', 'Борис');
+    expect(bot.state.people['1']!.name).toBe('Борис');
+    expect(bot.state.renaming).toEqual([]);
+    expect(bot.hasButton('1', 'n:keep')).toBe(false);
+
+    bot.command('1', '/name');
+    bot.press('1', 'n:keep');
+    expect(slotText(bot, '1', 'n:name')).toBe(texts.kept);
+    bot.text('1', 'Вера');
+    expect(bot.state.people['1']!.name).toBe('Борис');
+  });
+
+  it('занялся другим — имя больше не ждём: следующее сообщение не станет именем', () => {
+    const bot = new TestBot();
+    bot.register('1');
+    bot.command('1', '/name');
+    bot.command('1', '/status');
+    bot.text('1', 'Сплин — Выхода нет');
+    expect(bot.state.people['1']!.name).toBe('Игрок 1');
+  });
+
+  it('на отборе новое имя видят соперник в карточке пары и судья в панели матча', () => {
+    const bot = readyForQualifiers();
+    const matchId = nextMatch(bot)!;
+    const [a, b] = matchPlayers(bot.state.draw!, matchId)!;
+    const judge = appointJudge(bot, matchId);
+    expect(slotText(bot, b, 'd:card')).toContain(`Игрок ${a}`);
+
+    bot.command(a, '/name Новое Имя');
+    expect(slotText(bot, b, 'd:card')).toContain('Новое Имя');
+    expect(slotText(bot, b, 'd:card')).not.toContain(`Игрок ${a}`);
+    expect(bot.state.matches[matchId]!.session.config.players.map((p) => p.name)).toContain('Новое Имя');
+    expect(bot.allText(judge)).toContain('Новое Имя');
+
+    playToDecision(bot, `m:${matchId}:`, judge, [a, b]);
+    confirmAll(bot, `m:${matchId}:`, judge, [a, b]);
+    expect(bot.state.matches[matchId]!.closed).toBe(true);
+    expect(violations(bot.outLog)).toEqual([]);
+  });
+
+  it('до регистрации имя не сменить', () => {
+    const bot = new TestBot();
+    bot.command('99', '/name Кто-то');
+    expect(bot.lastText('99')).toBe(texts.stranger);
   });
 });

@@ -93,13 +93,17 @@ export function registrationButton(state: TournamentState, from: Sender, data: s
   return toast(state, from.id, texts.unavailable);
 }
 
+// Имя участника: от 2 до 32 символов, лишние пробелы убраны; не подходит — undefined.
+export function cleanName(text: string): string | undefined {
+  const name = text.trim().replace(/\s+/g, ' ');
+  return name.length < 2 || name.length > 32 || name.startsWith('/') ? undefined : name;
+}
+
 export function registrationText(state: TournamentState, from: Sender, text: string): Step {
   const pending = state.registration[from.id]!;
-  const name = text.trim().replace(/\s+/g, ' ');
   if (pending.step !== 'name') return { state, out: [registrationMessage(state, from.id, pending, true)] };
-  if (name.length < 2 || name.length > 32 || name.startsWith('/')) {
-    return say(state, from.id, textsTo(state, from.id).registration.badName);
-  }
+  const name = cleanName(text);
+  if (!name) return say(state, from.id, textsTo(state, from.id).registration.badName);
   const next: PendingRegistration = { ...pending, step: 'rules', name };
   return {
     state: { ...state, registration: { ...state.registration, [from.id]: next } },

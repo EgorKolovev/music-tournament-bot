@@ -30,7 +30,7 @@ export function styleButton(state: TournamentState, id: UserId, data: string): S
   const next = withStyles({ ...state, people: { ...state.people, [id]: { ...person, style: chosen } } });
   const texts = textsTo(next, id).commands.style;
   const confirm: OutgoingMessage = { ...styleMessage(next, id), text: `${texts.chosen({ name: styleOf(chosen).name })}\n\n${styleMessage(next, id).text}` };
-  return { state: next, out: [confirm, ...restyle(state, next)] };
+  return { state: next, out: [confirm, ...redrawShown(state, next)] };
 }
 
 function styleMessage(state: TournamentState, id: UserId): OutgoingMessage {
@@ -83,7 +83,8 @@ function withStyles(state: TournamentState): TournamentState {
 }
 
 // Уже показанные карточки, списки и панели матча правятся на месте — только те, что изменились.
-function restyle(before: TournamentState, after: TournamentState): Outgoing[] {
+// Так же — после смены имени (name.ts).
+export function redrawShown(before: TournamentState, after: TournamentState): Outgoing[] {
   const out: Outgoing[] = [...scope(after, changed(renderIntake(before.intake), renderIntake(after.intake)), 'i:')];
   if (before.draw && after.draw) out.push(...scope(after, changed(renderDraw(before.draw), renderDraw(after.draw)), 'd:'));
   for (const [matchId, runtime] of Object.entries(after.matches)) {

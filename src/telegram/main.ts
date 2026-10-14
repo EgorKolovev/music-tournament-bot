@@ -23,6 +23,8 @@ const TICK_MS = 15_000;
 const PUBLIC_COMMANDS = [
   { command: 'matches', description: 'Кто с кем играет' },
   { command: 'status', description: 'Где ты сейчас' },
+  { command: 'name', description: 'Сменить имя' },
+  { command: 'style', description: 'Как бот с тобой разговаривает' },
   { command: 'leave', description: 'Выйти из турнира' },
   { command: 'help', description: 'Что умеет бот' },
 ];

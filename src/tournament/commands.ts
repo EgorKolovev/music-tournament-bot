@@ -8,6 +8,7 @@ import { canAdmin, isOrganizer, matchTitle, message, participant, say, scoreLine
 import { technicalResult } from './organizer.ts';
 import { resendPanels, settingsText } from './panels.ts';
 import { askLeave } from './leave.ts';
+import { askName } from './name.ts';
 import { handleStart } from './registration.ts';
 import { finalistIds } from './stages.ts';
 import type { Step, TournamentState } from './state.ts';
@@ -15,7 +16,7 @@ import { renameTournament } from './settings.ts';
 import { askStyle } from './style.ts';
 import { personalStatus } from './status.ts';
 
-// Команды из чата: /start, /help, /status, /matches и команды организатора.
+// Команды из чата: /start, /help, /status, /matches, /name, /style, /leave и команды организатора.
 
 export function handleCommand(state: TournamentState, from: Sender, command: string, payload: string, at: number): Step {
   if (command === 'start') return handleStart(state, from, payload, at);
@@ -25,6 +26,7 @@ export function handleCommand(state: TournamentState, from: Sender, command: str
   if (command === 'matches') return say(state, from.id, matchesText(state, from.id));
   if (command === 'leave') return askLeave(state, from.id);
   if (command === 'style') return askStyle(state, from.id);
+  if (command === 'name') return askName(state, from.id, payload);
   if (command === 'game' && canAdmin(state, from.id)) return say(state, from.id, settingsText(state));
   if (command === 'rename' && isOrganizer(state, from.id)) return rename(state, from.id, payload);
   if (command === 'tech' && canAdmin(state, from.id)) return technicalResult(state, from.id, payload);
@@ -49,7 +51,7 @@ function broadcast(state: TournamentState, from: UserId, text: string): Step {
 
 function helpText(state: TournamentState, id: UserId): string {
   const { help } = textsTo(state, id).commands;
-  const lines = [help.intro, '', help.status, help.matches, help.style, help.leave];
+  const lines = [help.intro, '', help.status, help.matches, help.name, help.style, help.leave];
   if (canAdmin(state, id)) {
     lines.push(
       '',
