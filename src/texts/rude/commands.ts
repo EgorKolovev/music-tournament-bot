@@ -24,7 +24,7 @@ export const commands: NonNullable<StyleTexts['commands']> = {
 
   status: {
     phases: { archive: 'турнир всё' },
-    songs: ({ accepted, max }) => `🎵 Ботик принял песен: ${accepted} из ${max}`,
+    songs: ({ accepted, max }) => `🎵 Ботик принял песен: ${accepted} из ${max}${accepted === 0 ? ' — то есть нихуя' : ''}`,
     songsOnlyIntake: '🎁 Ты только кидаешь песни, в матчах не участвуешь.',
     songsOnly: '🎁 Твои песни в игре, а тебя в матчах нет.',
     champion: ({ name }) => `🏁 Победитель — ${name}, охуеть`,

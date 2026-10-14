@@ -1,3 +1,4 @@
+import { plural } from '../../shared/text.ts';
 import { pick, pickWith } from '../variants.ts';
 
 // Матч — отборочный и финальный: панель судьи и сообщение игроку о ходе матча.
@@ -6,10 +7,10 @@ import { pick, pickWith } from '../variants.ts';
 export const match = {
   judge: {
     title: ({ final, match }: { final: boolean; match: string }) => `${final ? 'Финал' : 'Отбор'} · матч №${match} · ты судья`,
-    fixed: ({ tracks }: { tracks: number }) => `${tracks} треков, побеждает тот, кто наберёт больше`,
+    fixed: ({ tracks }: { tracks: number }) => `${tracks} ${plural(tracks, 'трек', 'трека', 'треков')}, побеждает тот, кто наберёт больше`,
     fixedTie: 'При ничьей — ещё по треку, пока кто-то не вырвется вперёд',
     firstTo: ({ points }: { points: string }) => `Играем до ${points}: кто первым наберёт столько и будет впереди, тот и победил`,
-    limit: ({ tracks }: { tracks: number }) => `Не больше ${tracks} треков; при ничьей — ещё по треку, пока кто-то не вырвется вперёд`,
+    limit: ({ tracks }: { tracks: number }) => `Не больше ${tracks} ${plural(tracks, 'трека', 'треков', 'треков')}; при ничьей — ещё по треку, пока кто-то не вырвется вперёд`,
     points: ({ artist, title }: { artist: string; title: string }) => `За исполнителя ${artist} · за название ${title}`,
     whoIsHere: ({ judge, p0, p1 }: { judge: string; p0: string; p1: string }) => `Кто на месте: судья ${judge}, ${p0}, ${p1}`,
     fewSongs: ({ available, needed }: { available: number; needed: number }) =>

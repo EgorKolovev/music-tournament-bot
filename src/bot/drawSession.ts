@@ -177,7 +177,7 @@ function handleOrganizer(session: DrawSession, data: string): Result {
       config.finalists,
       config.seed,
     );
-    const journal = [...session.journal, `Жеребьёвка: ${config.players.length} игроков, seed ${config.seed}`];
+    const journal = [...session.journal, `Жеребьёвка: ${config.players.length} ${plural(config.players.length, 'игрок', 'игрока', 'игроков')}, seed ${config.seed}`];
     return { session: { ...session, bracket, journal } };
   }
 

@@ -5,6 +5,7 @@ import type { LibrarySong } from '../bot/matchSession.ts';
 import type { UserId } from '../bot/protocol.ts';
 import { buildQualifierBracket, qualified } from '../domain/bracket/bracket.ts';
 import { acceptedSongs } from '../domain/submission/intake.ts';
+import { plural } from '../shared/text.ts';
 import { DAY_MS, message, moscowDate, participant, scope, stylesOf, textsTo, toast } from './helpers.ts';
 import { ORG, type Step, type TournamentState } from './state.ts';
 
@@ -43,7 +44,7 @@ export function openDraw(state: TournamentState, at: number): Step {
     ...state,
     phase: 'qualifiers',
     draw: opened.session,
-    journal: [...state.journal, `Сбор закрыт: ${players.length} игроков допущено`],
+    journal: [...state.journal, `Сбор закрыт: ${players.length} ${plural(players.length, 'игрок допущен', 'игрока допущено', 'игроков допущено')}`],
   };
   return { state: next, out: scope(next, opened.out, 'd:') };
 }

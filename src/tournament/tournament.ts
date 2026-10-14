@@ -3,6 +3,7 @@ import { handleFinal } from '../bot/finalSession.ts';
 import { openIntakeSession } from '../bot/intakeSession.ts';
 import type { Incoming, OutgoingMessage, UserId } from '../bot/protocol.ts';
 import { findMatch } from '../domain/bracket/bracket.ts';
+import { plural } from '../shared/text.ts';
 import { isAudienceKey, MAX_BROADCAST_CHARS, sendBroadcast, type AudienceKey } from './broadcast.ts';
 import { handleCommand } from './commands.ts';
 import type { Sender, StampedEvent, TournamentEvent } from './events.ts';
@@ -272,7 +273,7 @@ function broadcastButton(state: TournamentState, actor: UserId, data: string): S
 function broadcastText(state: TournamentState, actor: UserId, key: AudienceKey, text: string): Step {
   const body = text.trim();
   if (body.length > MAX_BROADCAST_CHARS) {
-    return say(state, actor, `Длинновато: ${body.length} символов, можно до ${MAX_BROADCAST_CHARS}. Пришлите короче или нажмите «Отмена» в панели.`);
+    return say(state, actor, `Длинновато: ${body.length} ${plural(body.length, 'символ', 'символа', 'символов')}, можно до ${MAX_BROADCAST_CHARS}. Пришлите короче или нажмите «Отмена» в панели.`);
   }
   const drafts = { ...state.broadcastDrafts, [actor]: body };
   return resendPanels({ ...state, broadcastDrafts: drafts, panels: { ...state.panels, [actor]: `bcConfirm:${key}` } }, actor);

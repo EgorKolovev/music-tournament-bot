@@ -727,7 +727,7 @@ function renderOrganizer(session: IntakeSession): OutgoingMessage {
   if (!finalOk) lines.push(`Финалу не хватает ${split.finalTarget - split.final.length} — нужен запас организатора.`);
   lines.push(
     '',
-    readyForDraw(session) ? `Готово к жеребьёвке: ${players} игроков ✅` : 'Жеребьёвка — после решений по недобравшим.',
+    readyForDraw(session) ? `Готово к жеребьёвке: ${players} ${plural(players, 'игрок', 'игрока', 'игроков')} ✅` : 'Жеребьёвка — после решений по недобравшим.',
   );
 
   return {

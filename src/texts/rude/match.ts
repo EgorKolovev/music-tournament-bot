@@ -1,3 +1,4 @@
+import { plural } from '../../shared/text.ts';
 import type { StyleTexts } from '../index.ts';
 
 // Матч: панель судьи, сообщение игроку, кнопки. Подсказки называют кнопки так же, как они
@@ -6,10 +7,10 @@ import type { StyleTexts } from '../index.ts';
 export const match: NonNullable<StyleTexts['match']> = {
   judge: {
     title: ({ final, match }) => `${final ? 'Финал' : 'Отбор'} · матч №${match} · ты судья, держись`,
-    fixed: ({ tracks }) => `${tracks} треков, кто больше наберёт — тот и забрал`,
+    fixed: ({ tracks }) => `${tracks} ${plural(tracks, 'трек', 'трека', 'треков')}, кто больше наберёт — тот и забрал`,
     fixedTie: 'Ничья — ещё по треку, пока кто-то не вырвется вперёд',
     firstTo: ({ points }) => `Играем до ${points}: кто первым наберёт и будет впереди — тот и забрал`,
-    limit: ({ tracks }) => `Не больше ${tracks} треков; ничья — ещё по треку, пока кто-то не вырвется`,
+    limit: ({ tracks }) => `Не больше ${tracks} ${plural(tracks, 'трека', 'треков', 'треков')}; ничья — ещё по треку, пока кто-то не вырвется`,
     whoIsHere: ({ judge, p0, p1 }) => `Кто уже припёрся: судья ${judge}, ${p0}, ${p1}`,
     fewSongs: ({ available, needed }) => `⚠️ Подходящих песен ${available}, а надо хотя бы ${needed}. Пиздец — пиши организатору.`,
     allHere: ['Все на месте ✅ Погнали нахуй!', 'Все на месте ✅ Понеслась!'],

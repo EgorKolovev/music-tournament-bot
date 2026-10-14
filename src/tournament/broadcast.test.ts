@@ -67,7 +67,7 @@ describe('✉️ Рассылка', () => {
     bot.open(ORGANIZER, 'broadcast');
     bot.press(ORGANIZER, 'o:bc:all');
     bot.text(ORGANIZER, 'а'.repeat(3501));
-    expect(bot.lastText(ORGANIZER)).toContain('Длинновато: 3501 символов, можно до 3500');
+    expect(bot.lastText(ORGANIZER)).toContain('Длинновато: 3501 символ, можно до 3500');
     expect(bot.state.broadcastDrafts?.[ORGANIZER]).toBeUndefined();
     bot.text(ORGANIZER, 'Всем привет');
     bot.press(ORGANIZER, 'o:v:broadcast');

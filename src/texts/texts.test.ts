@@ -57,6 +57,20 @@ describe('тексты бота', () => {
     expect(picked.size).toBeGreaterThan(1);
   });
 
+  it('число и слово согласованы: 3 трека, 1 файл, «нихуя» при нуле', () => {
+    const base = textsFor('base', '1');
+    expect(base.match.judge.fixed({ tracks: 3 })).toMatch(/^3 трека,/);
+    expect(base.match.judge.limit({ tracks: 21 })).toMatch(/^Не больше 21 трека;/);
+    expect(base.intake.list.full({ max: 3 })).toBe('✅ Все 3 песни приняты');
+    for (const viewer of Array.from({ length: 20 }, (_, i) => String(i))) {
+      const rude = textsFor('rude', viewer);
+      expect(rude.intake.notice.received({ count: 1, rejected: 0 })).not.toMatch(/Прилетел[ои] 1 /);
+      expect(rude.intake.notice.received({ count: 3, rejected: 0 })).not.toMatch(/Прилетел 3 |Прилетело 3 /);
+      expect(rude.intake.list.progress({ accepted: 0, max: 15 })).toContain('0 из 15 — то есть нихуя');
+      expect(rude.intake.list.progress({ accepted: 2, max: 15 })).not.toContain('нихуя');
+    }
+  });
+
   it('неизвестный стиль — основной', () => {
     expect(textsFor('нет-такого', '1').intake.toast.closed).toBe(textsFor(undefined, '1').intake.toast.closed);
   });

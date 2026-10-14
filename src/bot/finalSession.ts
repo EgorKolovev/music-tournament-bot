@@ -11,6 +11,7 @@ import {
 import { scoreOf, usedSongIds } from '../domain/match/match.ts';
 import { formatPoints, type Ruleset } from '../domain/match/ruleset.ts';
 import { seededRandom, shuffled } from '../shared/random.ts';
+import { plural } from '../shared/text.ts';
 import { textsOf } from '../texts/index.ts';
 import {
   handleIncoming,
@@ -264,10 +265,10 @@ function offlineKit(session: FinalSession): OutgoingMessage[] {
     text: [
       '📦 Офлайн-комплект финала',
       '',
-      `Лист судьи по очереди: ${session.queue.length} песен, продолжать с позиции ${position}.`,
+      `Лист судьи по очереди: ${session.queue.length} ${plural(session.queue.length, 'песня', 'песни', 'песен')}, продолжать с позиции ${position}.`,
       'Правило то же, что в боте: следующая по очереди, пропуская песни двух игроков на сцене и уже сыгранные.',
       archiveFiles.length > 0
-        ? `Следом придут ZIP-архивы: ${archiveFiles.length} пронумерованных обезличенных MP3.`
+        ? `Следом придут ZIP-архивы: ${archiveFiles.length} ${plural(archiveFiles.length, 'пронумерованный обезличенный', 'пронумерованных обезличенных', 'пронумерованных обезличенных')} MP3.`
         : 'Аудио не нарезано — доступен только лист судьи.',
       missing > 0 ? `Без готового MP3: ${missing}. Их нужно включать вручную с позиции из листа.` : '',
       'После восстановления связи внесите результаты кнопкой «✍️ С бумаги».',
