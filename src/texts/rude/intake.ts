@@ -71,10 +71,18 @@ export const intake: NonNullable<StyleTexts['intake']> = {
   notice: {
     closed: ['Сбор закрыт, всё, пиздец — Ботик больше ничего не берёт.', 'Поезд ушёл: сбор закрыт. Новые песни и правки Ботик не берёт.'],
     received: [
-      ({ count, rejected }) =>
-        `Ботик получил ${count} ${plural(count, 'файл', 'файла', 'файлов')}${rejected ? `, из них ${rejected} — хуйня, не подошло` : ''}.`,
-      ({ count, rejected }) =>
-        `О, о! ${plural(count, 'Прилетел', 'Прилетели', 'Прилетело')} ${count} ${plural(count, 'файл', 'файла', 'файлов')}${rejected ? `, но ${rejected} — не то, бля` : ''}.`,
+      ({ count, rejected }) => {
+        const files = `Ботик получил ${count} ${plural(count, 'файл', 'файла', 'файлов')}`;
+        if (!rejected) return `${files}.`;
+        if (rejected === count) return `${files} — ${count === 1 ? 'и тот хуйня, не подошёл' : 'и все хуйня, ни один не подошёл'}.`;
+        return `${files}, из них ${rejected} — хуйня, не подошло.`;
+      },
+      ({ count, rejected }) => {
+        const files = `О, о! ${plural(count, 'Прилетел', 'Прилетели', 'Прилетело')} ${count} ${plural(count, 'файл', 'файла', 'файлов')}`;
+        if (!rejected) return `${files}.`;
+        if (rejected === count) return `${files}, и ${count === 1 ? 'тот' : 'все'} не то, бля.`;
+        return `${files}, но ${rejected} — не то, бля.`;
+      },
     ],
     thanks: ['Годная хуйня, спасибо!', 'Ботик доволен. Спасибо!', 'Пиздато, спасибо за песни!'],
     editHint: 'Чтобы поправить название, жми «✏️ Поправить хуйню» под списком.',

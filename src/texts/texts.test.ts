@@ -62,11 +62,15 @@ describe('тексты бота', () => {
     expect(base.match.judge.fixed({ tracks: 3 })).toMatch(/^3 трека,/);
     expect(base.match.judge.limit({ tracks: 21 })).toMatch(/^Не больше 21 трека;/);
     expect(base.intake.list.full({ max: 3 })).toBe('✅ Все 3 песни приняты');
+    expect(base.intake.notice.received({ count: 1, rejected: 1 })).toBe('Получил 1 файл — он не подошёл.');
+    expect(base.intake.notice.received({ count: 3, rejected: 1 })).toBe('Получил 3 файла, не подошло: 1.');
     for (const viewer of Array.from({ length: 20 }, (_, i) => String(i))) {
       const rude = textsFor('rude', viewer);
       expect(rude.intake.notice.received({ count: 1, rejected: 0 })).not.toMatch(/Прилетел[ои] 1 /);
       expect(rude.intake.notice.received({ count: 3, rejected: 0 })).not.toMatch(/Прилетел 3 |Прилетело 3 /);
       expect(rude.intake.list.progress({ accepted: 0, max: 15 })).toContain('0 из 15 — то есть нихуя');
+      expect(rude.intake.notice.received({ count: 1, rejected: 1 })).not.toMatch(/из них|но 1 —/);
+      expect(rude.intake.notice.received({ count: 3, rejected: 3 })).not.toMatch(/из них|но 3 —/);
       expect(rude.intake.list.progress({ accepted: 2, max: 15 })).not.toContain('нихуя');
     }
   });

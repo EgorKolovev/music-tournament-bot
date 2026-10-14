@@ -69,8 +69,13 @@ export const intake = {
 
   notice: {
     closed: 'Сбор уже закрыт, так что новые песни и правки я больше не принимаю.',
-    received: ({ count, rejected }: { count: number; rejected: number }) =>
-      `Получил ${count} ${plural(count, 'файл', 'файла', 'файлов')}${rejected ? `, не подошло: ${rejected}` : ''}.`,
+    // Не подошло всё — «он не подошёл» / «ни один не подошёл», а не «не подошло: 1».
+    received: ({ count, rejected }: { count: number; rejected: number }) => {
+      const files = `Получил ${count} ${plural(count, 'файл', 'файла', 'файлов')}`;
+      if (!rejected) return `${files}.`;
+      if (rejected === count) return `${files} — ${count === 1 ? 'он не подошёл' : 'ни один не подошёл'}.`;
+      return `${files}, не подошло: ${rejected}.`;
+    },
     // Спасибо за пачку песен, которая вся подошла.
     thanks: pickWith<{ total: number }>('Спасибо!', 'Спасибо за песни!', 'Отлично, спасибо!'),
     editHint: 'Чтобы поправить название, нажми «✏️ Исправить» под списком.',
