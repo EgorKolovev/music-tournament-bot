@@ -37,7 +37,7 @@ export const leave: NonNullable<StyleTexts['leave']> = {
   irreversible: [irreversible, `${irreversible}\nСИЛА ВОЛИ — Не торопись.`],
   lastStep: [
     `${lastStep}\nСУМРАК — Это конец. Настоящий.`,
-    `${lastStep}\nТРЕПЕТ — Я — дождь за этой дверью. Я холодная. Ты правда хочешь ко мне?`,
+    `${lastStep}\nТРЕПЕТ — Я — метель за этой дверью. Я холодная. Ты правда хочешь ко мне?`,
     `${lastStep}\nДРАМА — Последний акт. Занавес?`,
   ],
   stay: [
@@ -50,7 +50,7 @@ export const leave: NonNullable<StyleTexts['leave']> = {
   done: {
     intake: [
       `${doneIntake}\nСИЛА ВОЛИ — Песни сыграют за тебя.`,
-      `${doneIntake}\nТРЕПЕТ — Мокрая мостовая запомнит твои песни, даже когда шаги стихнут.`,
+      `${doneIntake}\nТРЕПЕТ — Стены запомнят твои песни, даже когда шаги стихнут.`,
     ],
     draw: [
       `${doneDraw}\nТРЕПЕТ — Где-то хлопнула дверь. По лестнице простучали шаги, и стало тихо.`,
