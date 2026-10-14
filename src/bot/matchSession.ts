@@ -15,6 +15,7 @@ import { formatPoints, regularTracks, type Ruleset } from '../domain/match/rules
 import { eligibleSongs, pickLeastUsed, type PoolSong } from '../domain/selection/pickSong.ts';
 import { seededRandom } from '../shared/random.ts';
 import { formatClock } from '../shared/text.ts';
+import { textsOf, type Texts } from '../texts/index.ts';
 import { NOOP, type Button, type Incoming, type Outgoing, type OutgoingMessage, type UserId } from './protocol.ts';
 
 // Сессия одного отборочного матча в памяти: превращает нажатия кнопок в команды ядра и рендерит
@@ -38,9 +39,12 @@ export interface LibrarySong extends PoolSong {
 
 export interface MatchSessionConfig {
   stage: 'qualifier' | 'final';
-  matchNo: number;
+  // Номер для людей: в отборе «1.4», как в сетке и карточках; в финале — порядковый.
+  matchNo: string;
   players: [Participant, Participant];
   judge: Participant;
+  // Стиль текстов участника (src/texts); нет — основной.
+  styles?: Record<UserId, string>;
   library: LibrarySong[];
   ruleset: Ruleset;
   seed: number;
@@ -69,21 +73,28 @@ export interface SessionStep {
   out: Outgoing[];
 }
 
-const ERROR_TEXT: Record<MatchError, string> = {
-  paused: 'Матч на паузе',
-  not_paused: 'Матч не на паузе',
-  wrong_phase: 'Сейчас это действие недоступно',
-  already_ready: 'Готовность уже отмечена',
-  track_not_started: 'Сначала нажмите «Начать трек»',
-  track_already_started: 'Трек уже начат',
-  component_taken: 'Этот ответ уже присуждён',
-  nothing_to_undo: 'Нечего отменять',
-  awards_present: 'Есть присуждённые ответы — закройте трек',
-  judge_must_confirm_first: 'Сначала результат подтверждает судья',
-  already_confirmed: 'Результат уже подтверждён',
-};
+function errorText(texts: Texts['match'], error: MatchError): string {
+  const { toast } = texts;
+  const byError: Record<MatchError, string> = {
+    paused: toast.paused,
+    not_paused: toast.notPaused,
+    wrong_phase: toast.wrongPhase,
+    already_ready: toast.alreadyReady,
+    track_not_started: toast.trackNotStarted,
+    track_already_started: toast.trackStarted,
+    component_taken: toast.componentTaken,
+    nothing_to_undo: toast.nothingToUndo,
+    awards_present: toast.awardsPresent,
+    judge_must_confirm_first: toast.judgeFirst,
+    already_confirmed: toast.alreadyConfirmed,
+  };
+  return byError[error];
+}
 
-const COMPONENT_LABEL: Record<Component, string> = { artist: 'Исполнитель', title: 'Название' };
+// Тексты матча для участника — в его стиле.
+function tx(session: MatchSession, userId: UserId): Texts['match'] {
+  return textsOf(session.config.styles, userId).match;
+}
 
 // Запас на основную часть матча и несколько дополнительных треков при ничьей.
 export function minSongsForMatch(ruleset: Ruleset): number {
@@ -99,21 +110,21 @@ export function handleIncoming(session: MatchSession, input: Incoming): SessionS
   // Во время матча бот реагирует только на кнопки.
   if (input.kind !== 'button') return { session, out: [] };
   const actor = actorOf(session.config, input.from);
-  if (actor === undefined) return reply(session, input.from, 'Вы не участник этого матча');
+  if (actor === undefined) return reply(session, input.from, tx(session, input.from).toast.stranger);
   if (input.data === NOOP) return { session, out: [] };
 
   const [action, versionTag] = input.data.split('|');
   if (actor === 'judge') {
     // Устаревшая кнопка не применяется: судья видит актуальную панель.
     if (versionTag !== `v${session.match.version}`) {
-      return reply(session, input.from, 'Панель устарела — показываю актуальную');
+      return reply(session, input.from, tx(session, input.from).toast.stalePanel);
     }
     return judgeAction(session, action!);
   }
 
   if (action === 'ready') return apply(session, { type: 'markReady', who: actor }, input.from);
   if (action === 'confirm') return apply(session, { type: 'confirmResult', who: actor }, input.from);
-  return reply(session, input.from, 'Это действие доступно только судье');
+  return reply(session, input.from, tx(session, input.from).toast.judgeOnly);
 }
 
 function judgeAction(session: MatchSession, action: string): SessionStep {
@@ -145,12 +156,12 @@ function judgeAction(session: MatchSession, action: string): SessionStep {
     return apply(session, { type: 'issueTrack', songId: song.id }, judgeId);
   }
 
-  return reply(session, judgeId, 'Неизвестное действие');
+  return reply(session, judgeId, tx(session, judgeId).toast.unknown);
 }
 
 function apply(session: MatchSession, command: MatchCommand, from: UserId): SessionStep {
   const result = applyCommand(session.match, command);
-  if (!result.ok) return reply(session, from, ERROR_TEXT[result.error]);
+  if (!result.ok) return reply(session, from, errorText(tx(session, from), result.error));
 
   const issued =
     command.type === 'issueTrack'
@@ -227,14 +238,14 @@ function renderJudge(session: MatchSession): Draft[] {
   issued.forEach((track, index) => {
     const song = config.library.find((s) => s.id === track.songId)!;
     const isCurrent = index === issued.length - 1;
-    const startHint = !song.audioFileId && song.startSec ? `Включите с ${formatClock(song.startSec)}` : '';
+    const startHint = !song.audioFileId && song.startSec ? judgeTexts(session).startAt({ start: formatClock(song.startSec) }) : '';
     drafts.push({
       kind: 'message',
       slot: `audio:${index}`,
       text: startHint,
       audio: { title: `Трек ${track.number}`, performer: 'Музыкальный турнир', url: song.audioUrl, fileId: song.audioFileId },
     });
-    drafts.push(message(`answers:${index}`, answersText(track.number, song)));
+    drafts.push(message(`answers:${index}`, answersText(session, track.number, song)));
     drafts.push(
       message(
         `panel:${index}`,
@@ -247,53 +258,55 @@ function renderJudge(session: MatchSession): Draft[] {
   return drafts;
 }
 
+// Тексты судьи — в его стиле.
+function judgeTexts(session: MatchSession): Texts['match']['judge'] {
+  return tx(session, session.config.judge.id).judge;
+}
+
 function lobbyText(session: MatchSession): string {
   const { config, match } = session;
   const { ruleset } = config;
   const [p0, p1] = config.players;
+  const texts = judgeTexts(session);
   const lines = [
-    `${config.stage === 'final' ? 'Финал' : 'Отбор'} · матч №${config.matchNo} · вы судья`,
+    texts.title({ final: config.stage === 'final', match: config.matchNo }),
     `${p0.name} — ${p1.name}`,
     '',
-    ...formatLines(ruleset),
-    `Исполнитель ${formatPoints(ruleset.artistPoints)} · Название ${formatPoints(ruleset.titlePoints)}`,
+    ...formatLines(texts, ruleset),
+    texts.points({ artist: formatPoints(ruleset.artistPoints), title: formatPoints(ruleset.titlePoints) }),
   ];
   const { phase } = match;
   if (phase.kind === 'lobby') {
     lines.push(
       '',
-      `Готовность: судья ${mark(phase.judgeReady)}, ${p0.name} ${mark(phase.playersReady[0])}, ${p1.name} ${mark(phase.playersReady[1])}`,
+      texts.whoIsHere({
+        judge: mark(phase.judgeReady),
+        p0: `${p0.name} ${mark(phase.playersReady[0])}`,
+        p1: `${p1.name} ${mark(phase.playersReady[1])}`,
+      }),
     );
     const available = eligibleForMatch(session).length;
     const needed = minSongsForMatch(ruleset);
-    if (available < needed) {
-      lines.push(`⚠️ Подходящих песен ${available}, нужно минимум ${needed}. Сообщите организатору.`);
-    }
+    if (available < needed) lines.push(texts.fewSongs({ available, needed }));
   } else if (phase.kind === 'suspended' && session.issued.length === 0) {
-    lines.push('', SUSPENDED_TEXT);
+    lines.push('', texts.suspended);
   } else {
-    lines.push('', 'Все на месте ✅');
+    lines.push('', texts.allHere);
   }
-  if (match.paused && session.issued.length === 0) lines.push('', '⏸ Пауза');
+  if (match.paused && session.issued.length === 0) lines.push('', texts.paused);
   return lines.join('\n');
 }
 
-const SUSPENDED_TEXT = '⛔ Подходящие песни закончились. Матч остановлен до решения организатора.';
-
-export function formatLines(ruleset: Ruleset): string[] {
+function formatLines(texts: Texts['match']['judge'], ruleset: Ruleset): string[] {
   const { format } = ruleset;
-  if (format.kind === 'fixed') {
-    return [`${format.tracks} треков, побеждает тот, у кого больше очков`, 'При равенстве — по одному треку до разрыва'];
-  }
-  return [
-    `Победа: ${formatPoints(format.winThreshold)} после закрытия трека при преимуществе`,
-    `Лимит: ${format.trackLimit} треков, при равенстве — по одному треку до разрыва`,
-  ];
+  if (format.kind === 'fixed') return [texts.fixed({ tracks: format.tracks }), texts.fixedTie];
+  return [texts.firstTo({ points: formatPoints(format.winThreshold) }), texts.limit({ tracks: format.trackLimit })];
 }
 
-function answersText(number: number, song: LibrarySong): string {
-  const lines = [`🔒 Ответы · трек ${number}`, `Исполнитель: ${song.artist}`, `Название: ${song.title}`];
-  if (song.acceptedAnswers?.length) lines.push(`Также принимается: ${song.acceptedAnswers.join('; ')}`);
+function answersText(session: MatchSession, number: number, song: LibrarySong): string {
+  const texts = judgeTexts(session);
+  const lines = [texts.answers({ n: number }), texts.artist({ artist: song.artist }), texts.songTitle({ title: song.title })];
+  if (song.acceptedAnswers?.length) lines.push(texts.alsoAccepted({ answers: song.acceptedAnswers.join('; ') }));
   return lines.join('\n');
 }
 
@@ -304,19 +317,21 @@ function scoreLine(session: MatchSession, score: [number, number]): string {
 
 function awardsLine(session: MatchSession, awards: { artist: PlayerSlot | null; title: PlayerSlot | null }): string {
   const name = (slot: PlayerSlot | null) => (slot === null ? '—' : session.config.players[slot].name);
-  return `Исполнитель: ${name(awards.artist)} · Название: ${name(awards.title)}`;
+  return judgeTexts(session).awards({ artist: name(awards.artist), title: name(awards.title) });
 }
 
 function pastTrackText(session: MatchSession, index: number): string {
   const track = session.issued[index]!;
+  const texts = judgeTexts(session);
   const cancelled = session.match.cancelledTracks.find((t) => t.songId === track.songId);
-  if (cancelled) return `Трек ${track.number} — технически отменён (ошибка аудио)`;
+  if (cancelled) return texts.cancelled({ n: track.number });
   const closedIndex = session.match.closedTracks.findIndex((t) => t.songId === track.songId);
   const closed = session.match.closedTracks[closedIndex]!;
   const scoreAfter = scoreOf(session.match.closedTracks.slice(0, closedIndex + 1), session.config.ruleset);
-  return [`Трек ${track.number} закрыт`, awardsLine(session, closed.awards), scoreLine(session, scoreAfter)].join(
-    '\n',
-  );
+  const lines = [texts.closed({ n: track.number }), awardsLine(session, closed.awards), scoreLine(session, scoreAfter)];
+  const nobody = closed.awards.artist === null && closed.awards.title === null && texts.nobody({ n: track.number });
+  if (nobody) lines.push(nobody);
+  return lines.join('\n');
 }
 
 function currentPanelText(session: MatchSession): string {
@@ -324,16 +339,17 @@ function currentPanelText(session: MatchSession): string {
   const { phase } = match;
   const lines: string[] = [];
   const last = session.issued.at(-1)!;
+  const texts = judgeTexts(session);
 
   if (phase.kind === 'track') {
     lines.push(
-      phase.track.started ? `▶️ Трек ${last.number} идёт` : `Трек ${last.number} выдан`,
+      phase.track.started ? texts.playing({ n: last.number }) : texts.ready({ n: last.number }),
       scoreLine(session, liveScore(match)),
     );
     if (phase.track.started) {
       lines.push(awardsLine(session, phase.track.awards));
     } else {
-      lines.push('', 'Аудио и ответы выше. Включите трек и нажмите «Начать трек».');
+      lines.push('', texts.startHint);
     }
   } else {
     lines.push(pastTrackText(session, session.issued.length - 1));
@@ -341,18 +357,17 @@ function currentPanelText(session: MatchSession): string {
     const regular = regularTracks(config.ruleset.format);
     if (phase.kind === 'between_tracks') {
       lines.push(
-        played < regular
-          ? `Сыграно ${played} из ${regular}`
-          : `Равенство — дополнительный трек ${played - regular + 1}`,
+        played < regular ? texts.played({ played, of: regular }) : texts.extra({ n: played - regular + 1 }),
       );
     }
     lines.push(...outcomeLines(session));
   }
-  if (match.paused) lines.push('', '⏸ Пауза');
+  if (match.paused) lines.push('', texts.paused);
   return lines.join('\n');
 }
 
 function outcomeLines(session: MatchSession): string[] {
+  const texts = judgeTexts(session);
   const { phase } = session.match;
   const [p0, p1] = session.config.players;
   const score = scoreOf(session.match.closedTracks, session.config.ruleset);
@@ -364,15 +379,15 @@ function outcomeLines(session: MatchSession): string[] {
       ].filter(Boolean);
       return [
         '',
-        `🏁 Победа: ${session.config.players[phase.winner].name}`,
+        texts.winner({ name: session.config.players[phase.winner].name }),
         scoreLine(session, score),
-        phase.judgeConfirmed ? `Ждём подтверждения: ${pending.join(', ')}` : 'Подтвердите результат матча.',
+        phase.judgeConfirmed ? texts.waitConfirm({ names: pending.join(', ') }) : texts.confirm,
       ];
     }
     case 'finished':
-      return ['', `✅ Результат подтверждён. Победа: ${session.config.players[phase.winner].name}`];
+      return ['', texts.confirmed({ name: session.config.players[phase.winner].name })];
     case 'suspended':
-      return ['', SUSPENDED_TEXT];
+      return ['', texts.suspended];
     default:
       return [];
   }
@@ -382,25 +397,30 @@ function currentButtons(session: MatchSession): Button[][] {
   const { match, config } = session;
   const v = `|v${match.version}`;
   const button = (label: string, action: string): Button => ({ label, data: `${action}${v}` });
+  const texts = tx(session, config.judge.id).buttons;
 
-  if (match.paused) return [[button('▶️ Продолжить', 'resume')]];
+  if (match.paused) return [[button(texts.resume, 'resume')]];
 
   const { phase } = match;
   switch (phase.kind) {
     case 'lobby':
-      return phase.judgeReady ? [] : [[button('Все на месте', 'ready')]];
+      return phase.judgeReady ? [] : [[button(texts.allHere, 'ready')]];
     case 'between_tracks':
-      return [[button(`Выдать трек ${match.closedTracks.length + 1}`, 'issue')], [button('⏸ Пауза', 'pause')]];
+      return [[button(texts.issue({ n: match.closedTracks.length + 1 }), 'issue')], [button(texts.pause, 'pause')]];
     case 'track': {
       const { track } = phase;
       if (!track.started) {
-        return [[button('▶️ Начать трек', 'start')], [button('⚠️ Ошибка аудио', 'audioError'), button('⏸ Пауза', 'pause')]];
+        return [[button(texts.start, 'start')], [button(texts.audioError, 'audioError'), button(texts.pause, 'pause')]];
       }
+      const labels: Record<Component, { open: (p: { points: string }) => string; done: string }> = {
+        artist: { open: texts.artist, done: texts.artistDone },
+        title: { open: texts.title, done: texts.titleDone },
+      };
       const componentRow = (component: Component, code: string, points: number): Button[] =>
         ([0, 1] as const).map((slot) => {
           const owner = track.awards[component];
-          if (owner === null) return button(`${COMPONENT_LABEL[component]} +${formatPoints(points)}`, `aw:${code}:${slot}`);
-          return { label: owner === slot ? `✅ ${COMPONENT_LABEL[component]}` : '—', data: NOOP };
+          if (owner === null) return button(labels[component].open({ points: formatPoints(points) }), `aw:${code}:${slot}`);
+          return { label: owner === slot ? labels[component].done : '—', data: NOOP };
         });
       const nothingAwarded = track.awards.artist === null && track.awards.title === null;
       const rows: Button[][] = [
@@ -408,13 +428,13 @@ function currentButtons(session: MatchSession): Button[][] {
         componentRow('artist', 'a', config.ruleset.artistPoints),
         componentRow('title', 't', config.ruleset.titlePoints),
       ];
-      if (track.awardOrder.length > 0) rows.push([button('↩️ Отменить последнее', 'undo')]);
-      rows.push([nothingAwarded ? button('Никто не угадал', 'none') : button('✅ Закрыть трек', 'close')]);
-      rows.push([button('⏸ Пауза', 'pause'), button('⚠️ Ошибка аудио', 'audioError')]);
+      if (track.awardOrder.length > 0) rows.push([button(texts.undo, 'undo')]);
+      rows.push([nothingAwarded ? button(texts.nobody, 'none') : button(texts.close, 'close')]);
+      rows.push([button(texts.pause, 'pause'), button(texts.audioError, 'audioError')]);
       return rows;
     }
     case 'decided':
-      return phase.judgeConfirmed ? [] : [[button('Подтвердить результат', 'confirm')]];
+      return phase.judgeConfirmed ? [] : [[button(texts.confirm, 'confirm')]];
     default:
       return [];
   }
@@ -423,31 +443,33 @@ function currentButtons(session: MatchSession): Button[][] {
 function renderPlayerStatus(session: MatchSession, slot: PlayerSlot): Draft {
   const { config, match } = session;
   const opponent = config.players[slot === 0 ? 1 : 0];
-  const header = `Матч №${config.matchNo} · соперник: ${opponent.name} · судья: ${config.judge.name}`;
+  const { player: texts, buttons } = tx(session, config.players[slot].id);
+  const header = texts.header({ match: config.matchNo, opponent: opponent.name, judge: config.judge.name });
   const score = scoreLine(session, scoreOf(match.closedTracks, config.ruleset));
   const { phase } = match;
-  const paused = match.paused ? '\n⏸ Пауза' : '';
+  const paused = match.paused ? `\n${texts.paused}` : '';
 
   switch (phase.kind) {
     case 'lobby':
       return phase.playersReady[slot]
-        ? message('status', `${header}\n\n✅ Вы готовы, ждём остальных${paused}`)
-        : message('status', `${header}\n\nКогда будете на месте, подтвердите готовность.${paused}`, [
-            [{ label: 'Я на месте', data: 'ready' }],
-          ]);
+        ? message('status', `${header}\n\n${texts.here}${paused}`)
+        : message('status', `${header}\n\n${texts.comeIn}${paused}`, [[{ label: buttons.here, data: 'ready' }]]);
     case 'between_tracks':
     case 'track':
-      return message('status', `${header}\n\nСыграно треков: ${match.closedTracks.length}\n${score}${paused}`);
+      return message('status', `${header}\n\n${texts.played({ count: match.closedTracks.length })}\n${score}${paused}`);
     case 'decided': {
-      const result = `${header}\n\n🏁 Победа: ${config.players[phase.winner].name}\n${score}`;
-      if (!phase.judgeConfirmed) return message('status', `${result}\nЖдём подтверждения судьи.`);
-      if (phase.playersConfirmed[slot]) return message('status', `${result}\n✅ Вы подтвердили результат.`);
-      return message('status', result, [[{ label: 'Подтверждаю результат', data: 'confirm' }]]);
+      const result = `${header}\n\n${texts.winner({ name: config.players[phase.winner].name })}\n${score}`;
+      if (!phase.judgeConfirmed) return message('status', `${result}\n${texts.waitJudge}`);
+      if (phase.playersConfirmed[slot]) return message('status', `${result}\n${texts.confirmed}`);
+      return message('status', result, [[{ label: buttons.confirmPlayer, data: 'confirm' }]]);
     }
-    case 'finished':
-      return message('status', `${header}\n\n✅ Матч завершён. Победа: ${config.players[phase.winner].name}\n${score}`);
+    case 'finished': {
+      const cheer = (phase.winner === slot ? texts.won : texts.lost)({ match: config.matchNo });
+      const lines = [`${header}\n\n${texts.finished({ name: config.players[phase.winner].name })}\n${score}`, ...(cheer ? [cheer] : [])];
+      return message('status', lines.join('\n\n'));
+    }
     case 'suspended':
-      return message('status', `${header}\n\n⛔ Матч остановлен: закончились подходящие песни. Ждём решения организатора.\n${score}`);
+      return message('status', `${header}\n\n${texts.suspended}\n${score}`);
   }
 }
 

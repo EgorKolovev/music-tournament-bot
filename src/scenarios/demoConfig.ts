@@ -65,7 +65,7 @@ export const DEMO_LIBRARY: LibrarySong[] = SONGS.map(([artist, title, owner, acc
 export function demoConfig(overrides: Partial<MatchSessionConfig> = {}): MatchSessionConfig {
   return {
     stage: 'qualifier',
-    matchNo: 7,
+    matchNo: '7',
     players: [DEMO_USERS.p0, DEMO_USERS.p1],
     judge: DEMO_USERS.judge,
     library: DEMO_LIBRARY,

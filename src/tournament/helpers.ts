@@ -4,11 +4,14 @@ import type { MatchSession, Participant } from '../bot/matchSession.ts';
 import type { Incoming, Outgoing, OutgoingMessage, UserId } from '../bot/protocol.ts';
 import { findMatch } from '../domain/bracket/bracket.ts';
 import { formatPoints } from '../domain/match/ruleset.ts';
+import { textsFor, type Texts } from '../texts/index.ts';
 import { ORG, type Step, type TournamentState } from './state.ts';
 
 // Общие помощники оркестратора: адресация сообщений, префиксы контекста, имена и счёт.
 
 export const DAY_MS = 24 * 60 * 60_000;
+// Москва — UTC+3 круглый год; по ней считаются сроки кругов и время бэкапа.
+export const MSK_OFFSET_MS = 3 * 3_600_000;
 
 // Панели этапов, которые сессии рисуют для организатора. Отдельными сообщениями они больше
 // не уходят: панель админа показывает их как разделы «Сбор», «Сетка» и «Финал».
@@ -50,6 +53,16 @@ export function say(state: TournamentState, to: UserId, text: string): Step {
 
 export function toast(state: TournamentState, to: UserId, text: string): Step {
   return { state, out: [{ kind: 'toast', to, text }] };
+}
+
+// Тексты для человека — в его стиле (src/texts); незарегистрированному — основной.
+export function textsTo(state: TournamentState, id: UserId): Texts {
+  return textsFor(state.people[id]?.style);
+}
+
+// Стили участников для сессий: только выбранные, остальным — основной.
+export function stylesOf(state: TournamentState): Record<UserId, string> {
+  return Object.fromEntries(Object.values(state.people).flatMap((p) => (p.style ? [[p.id, p.style]] : [])));
 }
 
 export function message(to: UserId, text: string): OutgoingMessage {
@@ -112,4 +125,9 @@ export function scoreLine(session: MatchSession): string {
 
 export function isoDate(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
+}
+
+// Дата по Москве: жеребьёвка в час ночи — это уже новый день, хотя по UTC ещё вчера.
+export function moscowDate(ms: number): string {
+  return isoDate(ms + MSK_OFFSET_MS);
 }

@@ -4,7 +4,7 @@ import { acceptedCount, admittedPlayers, isSongsOnly, readyForDraw, render as re
 import type { Button, OutgoingMessage, UserId } from '../bot/protocol.ts';
 import { findMatch, openMatches, playedMatches, qualified } from '../domain/bracket/bracket.ts';
 import { audienceScreen, broadcastScreen, confirmScreen, isAudienceKey, type AudienceKey } from './broadcast.ts';
-import { hasLeft, isoDate, isOrganizer, isParticipant, matchTitle, panelHolders, participant, scoreLine, whoIs } from './helpers.ts';
+import { hasLeft, isoDate, isOrganizer, isParticipant, matchTitle, panelHolders, participant, scoreLine, textsTo, whoIs } from './helpers.ts';
 import { techCandidates, withdrawCandidates } from './organizer.ts';
 import { isSettingKey, lockReason, SETTING_KEYS, settingChoice, settingLine, settingName } from './settings.ts';
 import { finalistIds } from './stages.ts';
@@ -40,13 +40,14 @@ export function renderExtras(state: TournamentState): OutgoingMessage[] {
     const { phase } = match;
     config.players.forEach((player, slot) => {
       const confirmed = (phase.kind === 'decided' && phase.playersConfirmed[slot]) || phase.kind === 'finished';
+      const texts = textsTo(state, player.id).events.dispute;
       let text: string;
       let buttons: Button[][] | undefined;
-      if (runtime.dispute) text = runtime.dispute.by === player.id ? '⚠️ Спор передан организатору.' : '⚠️ Соперник оспорил результат — решает организатор.';
-      else if (runtime.closed || confirmed) text = `Матч №${config.matchNo}: результат зафиксирован.`;
+      if (runtime.dispute) text = runtime.dispute.by === player.id ? texts.mine : texts.theirs;
+      else if (runtime.closed || confirmed) text = texts.recorded({ match: config.matchNo });
       else {
-        text = `Не согласен с результатом матча №${config.matchNo}? Организатор разберётся.`;
-        buttons = [[{ label: '⚠️ Оспорить', data: `x:dispute:${matchId}` }]];
+        text = texts.offer({ match: config.matchNo });
+        buttons = [[{ label: texts.button, data: `x:dispute:${matchId}` }]];
       }
       out.push({ kind: 'message', to: player.id, slot: `x:${matchId}#${runtime.attempt}`, text, buttons });
     });
@@ -73,7 +74,7 @@ export function retiredNotices(state: TournamentState, matchId: string, old: Mat
   const out: OutgoingMessage[] = [];
   if (old.decidedAt !== undefined) {
     for (const player of config.players) {
-      out.push({ kind: 'message', to: player.id, slot: `x:${matchId}#${old.attempt}`, text: `Матч №${config.matchNo}: назначена переигровка.` });
+      out.push({ kind: 'message', to: player.id, slot: `x:${matchId}#${old.attempt}`, text: textsTo(state, player.id).events.dispute.replayed({ match: config.matchNo }) });
     }
   }
   if (old.dispute || old.confirmEscalated) out.push(...panelHolders(state).map((id) => issueNotice(state, matchId, { ...old, closed: true }, id)));
@@ -85,7 +86,7 @@ function issueNotice(state: TournamentState, matchId: string, runtime: MatchRunt
   const { config } = runtime.session;
   const title = matchTitle(state, matchId);
   const lines = [runtime.dispute ? `⚠️ Спор по матчу ${title}` : `⏳ Результат матча ${title} не подтверждён 10 минут`, scoreLine(runtime.session)];
-  if (runtime.dispute) lines.push(`Оспорил: ${participant(state, runtime.dispute.by).name}. Судья: ${config.judge.name}.`);
+  if (runtime.dispute) lines.push(`Спорит: ${participant(state, runtime.dispute.by).name}. Судья: ${config.judge.name}.`);
   if (runtime.closed) lines.push('', '✅ Решено.');
   const buttons = runtime.closed ? undefined : [[{ label: '🔎 Открыть в панели', data: `o:open:${matchId}` }]];
   return { kind: 'message', to, slot: `o:issue:${matchId}#${runtime.attempt}`, text: lines.join('\n'), buttons };
@@ -196,7 +197,7 @@ function homeScreen(state: TournamentState): Screen {
         .filter(([, m]) => !m.closed && (m.dispute || m.confirmEscalated))
         .map(([id, m]) => `${m.dispute ? 'спор' : 'не подтверждён'} ${matchCode(state, id)}`);
       if (attention.length > 0) lines.push('', `⚠️ Требует внимания: ${attention.join(', ')}`);
-      if (state.withdrawn.length > 0) lines.push(`🚪 Сняты: ${state.withdrawn.map((id) => participant(state, id).name).join(', ')}`);
+      if (state.withdrawn.length > 0) lines.push(`🚪 Вне турнира: ${state.withdrawn.map((id) => participant(state, id).name).join(', ')}`);
       buttons.push([
         { label: '🗺 Сетка', data: 'o:v:bracket' },
         { label: '🎤 Матчи', data: 'o:v:matches' },
@@ -213,7 +214,7 @@ function homeScreen(state: TournamentState): Screen {
         lines.push(
           state.finalJudge
             ? `Судья финала: ${state.finalJudge.name}`
-            : `Судья финала не назначен. Отправьте ему ссылку: https://t.me/${config.botUsername}?start=fjudge_${config.code}`,
+            : `Судья финала не назначен. Отправьте ссылку тому, кто будет судить: https://t.me/${config.botUsername}?start=fjudge_${config.code}`,
         );
         if (state.finalJudge) buttons.push([{ label: '▶️ Открыть финал', data: 'o:openFinal' }]);
       } else if (qualified(state.final.bracket, state.final.results)[0]) {
@@ -301,7 +302,7 @@ function matchScreen(state: TournamentState, matchId: string): Screen {
 
   if (live && issue) {
     const { phase } = live.session.match;
-    lines.push(live.dispute ? `⚠️ Спор. Оспорил: ${participant(state, live.dispute.by).name}.` : '⏳ Результат не подтверждён 10 минут.');
+    lines.push(live.dispute ? `⚠️ Спор: результат оспаривает ${participant(state, live.dispute.by).name}.` : '⏳ Результат не подтверждён 10 минут.');
     if (phase.kind === 'decided' || phase.kind === 'finished') {
       lines.push(`По протоколу побеждает ${live.session.config.players[phase.winner].name}: ${scoreLine(live.session)}.`);
       buttons.push([
@@ -391,7 +392,7 @@ function shortStatus(state: TournamentState, id: UserId): string {
   }
   if (songsOnly) return '🎁 только песни';
   // Вышедший до жеребьёвки уже не в списке игроков — поэтому проверка раньше.
-  if (state.withdrawn.includes(id)) return hasLeft(state, id) ? '🚪 вышел сам' : '🚪 снятие с турнира';
+  if (state.withdrawn.includes(id)) return hasLeft(state, id) ? '🚪 выход по своему желанию' : '🚪 снятие с турнира';
   if (!draw?.config.players.some((p) => p.id === id)) return 'не играет';
   const champion = state.final && qualified(state.final.bracket, state.final.results)[0];
   if (champion === id) return '🏆 победитель';

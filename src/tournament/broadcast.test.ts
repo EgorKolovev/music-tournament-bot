@@ -74,7 +74,7 @@ describe('✉️ Рассылка', () => {
     expect(panelOf(bot, ORGANIZER)!.text).toContain('Кому написать?');
 
     bot.send({ kind: 'button', from: sender('1'), data: 'o:v:broadcast' });
-    expect(bot.toasts.at(-1)).toEqual({ to: '1', text: 'Это действие доступно только организатору и админам' });
+    expect(bot.toasts.at(-1)).toEqual({ to: '1', text: 'Эта кнопка — для организатора и админов' });
   });
 
   it('на отборе: «Парам без судьи» — только пары, которым судью ещё не нашли', () => {

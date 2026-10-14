@@ -10,6 +10,7 @@ import {
   type Slot,
 } from '../domain/bracket/bracket.ts';
 import { plural } from '../shared/text.ts';
+import { textsOf } from '../texts/index.ts';
 import type { Participant } from './matchSession.ts';
 import type { Button, Incoming, Outgoing, OutgoingMessage, UserId } from './protocol.ts';
 
@@ -28,9 +29,11 @@ export interface DrawSessionConfig {
   organizer: Participant;
   finalists: number;
   seed: number;
-  // Сроки кругов отбора, ISO-даты.
+  // Сроки кругов отбора, ISO-даты; пусто — турнир без сроков.
   deadlines: string[];
   botUsername: string;
+  // Стиль текстов участника (src/texts); нет — основной.
+  styles?: Record<UserId, string>;
 }
 
 interface JudgeAssignment {
@@ -122,7 +125,7 @@ export function removePlayer(session: DrawSession, userId: UserId): DrawStep {
   const before = render(session);
   const players = session.config.players.filter((p) => p.id !== userId);
   const step = emit({ ...session, config: { ...session.config, players } }, before);
-  const card: OutgoingMessage = { kind: 'message', to: userId, slot: 'card', text: '🚪 Ты вышел из турнира — в жеребьёвку не попадёшь.' };
+  const card: OutgoingMessage = { kind: 'message', to: userId, slot: 'card', text: tx(session, userId).card.left };
   return { session: step.session, out: [...step.out, card] };
 }
 
@@ -130,18 +133,19 @@ export function removePlayer(session: DrawSession, userId: UserId): DrawStep {
 // судьи и подтверждение обоих игроков всё равно нужны — знание ссылки прав не даёт.
 export function inviteByLink(session: DrawSession, matchId: string, userId: UserId): DrawStep {
   const notice = (text: string): DrawStep => ({ session, out: [{ kind: 'message', to: userId, text }] });
+  const { invite } = tx(session, userId);
   const match = session.bracket && findMatch(session.bracket, matchId);
-  if (!match || match.isBye || session.results[matchId]) return notice('Это приглашение уже неактуально.');
-  if (playersIn(session, match).includes(userId)) return notice('Это твой собственный матч — судить его нельзя.');
+  if (!match || match.isBye || session.results[matchId]) return notice(invite.stale);
+  if (playersIn(session, match).includes(userId)) return notice(invite.own);
   const current = session.judges[matchId];
   if (current?.candidate === userId) return emit(session, []);
-  if (current?.accepted) return notice('У этого матча уже есть судья.');
+  if (current?.accepted) return notice(invite.taken);
   if (!judgeCandidates(session, match).some((p) => p.id === userId)) {
-    return notice('Сейчас ты не можешь судить этот матч: судья ведёт один матч за раз.');
+    return notice(invite.busy);
   }
   const before = render(session);
   const assignment: JudgeAssignment = { candidate: userId, accepted: false, confirmedBy: [] };
-  const journal = [...session.journal, `${nameOf(session, userId)} открыл ссылку судьи ${matchLabel(match)}`];
+  const journal = [...session.journal, `${nameOf(session, userId)}: по ссылке судьи ${matchLabel(match)}`];
   return emit({ ...session, judges: { ...session.judges, [matchId]: assignment }, journal }, before);
 }
 
@@ -180,8 +184,10 @@ function handleOrganizer(session: DrawSession, data: string): Result {
   const shift = /^shift:(\d+)$/.exec(data);
   if (shift && session.bracket) {
     const round = Number(shift[1]);
-    const before = session.deadlines[round - 1]!;
+    const before = roundDeadline(session, round);
+    if (!before) return { toast: 'У кругов этого турнира нет сроков' };
     const after = addDays(before, 2);
+    const until = (id: UserId) => tx(session, id).until({ date: formatDate(after) });
     const deadlines = session.deadlines.map((d, i) => (i === round - 1 ? after : d));
     const journal = [...session.journal, `Организатор: срок ${round}-го круга ${formatDate(before)} → ${formatDate(after)}`];
     // Уведомляем только затронутых: участников матчей этого круга и их судей.
@@ -194,7 +200,7 @@ function handleOrganizer(session: DrawSession, data: string): Result {
         notifications.push({
           kind: 'message',
           to: id,
-          text: `📅 Срок матча ${matchLabel(match)} перенесён: до ${formatDate(after)} (было ${formatDate(before)}).`,
+          text: tx(session, id).shifted({ match: matchLabel(match), until: until(id) }),
         });
       }
     }
@@ -204,11 +210,12 @@ function handleOrganizer(session: DrawSession, data: string): Result {
 }
 
 function handlePlayer(session: DrawSession, from: UserId, data: string): Result {
-  if (!session.bracket) return { toast: 'Жеребьёвки ещё не было' };
+  const { toast } = tx(session, from);
+  if (!session.bracket) return { toast: toast.noDraw };
 
   if (data === 'pickJudge' || data === 'cancel') {
     const match = currentMatch(session, from);
-    if (!match) return { toast: 'У тебя сейчас нет матча' };
+    if (!match) return { toast: toast.noMatch };
     const mode: Mode = data === 'pickJudge' ? { kind: 'pickJudge' } : { kind: 'idle' };
     return { session: { ...session, modes: { ...session.modes, [from]: mode } } };
   }
@@ -216,9 +223,9 @@ function handlePlayer(session: DrawSession, from: UserId, data: string): Result 
   const judge = /^judge:(.+)$/.exec(data);
   if (judge) {
     const match = currentMatch(session, from);
-    if (!match) return { toast: 'У тебя сейчас нет матча' };
+    if (!match) return { toast: toast.noMatch };
     const candidate = judge[1]!;
-    if (!judgeCandidates(session, match).some((p) => p.id === candidate)) return { toast: 'Этот человек не может судить матч' };
+    if (!judgeCandidates(session, match).some((p) => p.id === candidate)) return { toast: toast.cannotJudge };
     // В симуляторе у фоновых участников нет чата — за них приглашение принимается сразу.
     const accepted = !isInteractive(session, candidate);
     const assignment: JudgeAssignment = { proposedBy: from, candidate, accepted, confirmedBy: [from] };
@@ -237,7 +244,7 @@ function handlePlayer(session: DrawSession, from: UserId, data: string): Result 
   if (answer) {
     const [, verdict, matchId] = answer;
     const assignment = session.judges[matchId!];
-    if (!assignment || assignment.candidate !== from || assignment.accepted) return { toast: 'Приглашение уже неактуально' };
+    if (!assignment || assignment.candidate !== from || assignment.accepted) return { toast: toast.staleInvite };
     if (verdict === 'decline') {
       const { [matchId!]: _, ...judges } = session.judges;
       const journal = [...session.journal, `Отказ судить ${matchLabel(findMatch(session.bracket!, matchId!)!)}: ${nameOf(session, from)}`];
@@ -251,8 +258,8 @@ function handlePlayer(session: DrawSession, from: UserId, data: string): Result 
     const matchId = confirm[1]!;
     const assignment = session.judges[matchId];
     const match = findMatch(session.bracket, matchId);
-    if (!assignment || !match || !playersIn(session, match).includes(from)) return { toast: 'Это не твой матч' };
-    if (!assignment.accepted || assignment.confirmedBy.includes(from)) return { toast: 'Подтверждение не требуется' };
+    if (!assignment || !match || !playersIn(session, match).includes(from)) return { toast: toast.notYours };
+    if (!assignment.accepted || assignment.confirmedBy.includes(from)) return { toast: toast.noConfirm };
     const confirmed = { ...assignment, confirmedBy: [...assignment.confirmedBy, from] };
     const journal =
       confirmed.confirmedBy.length === 2
@@ -261,7 +268,7 @@ function handlePlayer(session: DrawSession, from: UserId, data: string): Result 
     return { session: { ...session, judges: { ...session.judges, [matchId]: confirmed }, journal } };
   }
 
-  return { toast: 'Сейчас это действие недоступно' };
+  return { toast: toast.unavailable };
 }
 
 // --- Правила подбора ----------------------------------------------------------
@@ -310,10 +317,11 @@ export function render(session: DrawSession): OutgoingMessage[] {
 
 function renderPlayer(session: DrawSession, userId: UserId): OutgoingMessage[] {
   const { config, bracket } = session;
+  const texts = tx(session, userId);
   const messages: OutgoingMessage[] = [];
   if (!bracket) {
     if (config.players.some((p) => p.id === userId)) {
-      messages.push({ kind: 'message', to: userId, slot: 'card', text: '⏳ Сбор закрыт, ждём жеребьёвку. Пару пришлю сюда.' });
+      messages.push({ kind: 'message', to: userId, slot: 'card', text: texts.card.waitDraw });
     }
     return messages;
   }
@@ -323,40 +331,38 @@ function renderPlayer(session: DrawSession, userId: UserId): OutgoingMessage[] {
   const isPlayer = config.players.some((p) => p.id === userId);
   if (match) messages.push(matchCard(session, userId, match));
   else if (isPlayer && qualifiedIds(session).includes(userId)) {
-    messages.push({ kind: 'message', to: userId, slot: 'card', text: '🏆 Ты в финале! Дату и место сообщит организатор.' });
+    messages.push({ kind: 'message', to: userId, slot: 'card', text: texts.card.finalist });
   } else if (isPlayer && eliminated(session, userId)) {
-    messages.push({
-      kind: 'message',
-      to: userId,
-      slot: 'card',
-      text: 'Отбор для тебя закончился. Спасибо за игру! Тебя всё ещё могут позвать судить чужие матчи.',
-    });
+    messages.push({ kind: 'message', to: userId, slot: 'card', text: texts.card.eliminated });
   } else if (bye && !session.results[bye.id]) messages.push(byeCard(session, userId, bye));
   else if (isPlayer && waitingOpponent(session, userId)) {
-    messages.push({ kind: 'message', to: userId, slot: 'card', text: '⏳ Ждём, кто станет твоим следующим соперником. Пару пришлю сюда.' });
+    messages.push({ kind: 'message', to: userId, slot: 'card', text: texts.card.waitOpponent });
   }
 
   // Приглашения судить чужой матч.
   for (const [matchId, assignment] of Object.entries(session.judges)) {
     if (assignment.candidate !== userId || session.results[matchId]) continue;
     const judged = findMatch(bracket, matchId)!;
-    const [a, b] = playersIn(session, judged).map((id) => nameOf(session, id));
-    const deadline = formatDate(session.deadlines[judged.round - 1]!);
+    const [a = '', b = ''] = playersIn(session, judged).map((id) => nameOf(session, id));
+    const deadline = roundDeadline(session, judged.round);
+    const until = deadline ? texts.until({ date: formatDate(deadline) }) : undefined;
+    const match = matchLabel(judged);
+    const { invite, buttons } = texts;
     if (!assignment.accepted) {
       messages.push({
         kind: 'message',
         to: userId,
         slot: `invite:${matchId}`,
         text: [
-          `⚖️ ${assignment.proposedBy ? `${nameOf(session, assignment.proposedBy)} зовёт тебя` : 'Тебя зовут'} судить матч ${matchLabel(judged)}: ${a} — ${b}.`,
-          `Срок: до ${deadline}. Договоритесь о времени и месте с игроками.`,
+          assignment.proposedBy ? invite.from({ by: nameOf(session, assignment.proposedBy), match, a, b }) : invite.anonymous({ match, a, b }),
+          until ? invite.until({ until }) : invite.arrange,
           '',
-          'Песни, которые ты услышишь как судья, тебе потом не выпадут в собственных матчах.',
+          invite.songs,
         ].join('\n'),
         buttons: [
           [
-            { label: '✅ Соглашаюсь', data: `accept:${matchId}` },
-            { label: 'Не смогу', data: `decline:${matchId}` },
+            { label: buttons.accept, data: `accept:${matchId}` },
+            { label: buttons.decline, data: `decline:${matchId}` },
           ],
         ],
       });
@@ -367,10 +373,8 @@ function renderPlayer(session: DrawSession, userId: UserId): OutgoingMessage[] {
         to: userId,
         slot: `invite:${matchId}`,
         text: ready
-          ? `⚖️ Ты судья матча ${matchLabel(judged)}: ${a} — ${b}, до ${deadline}.\n${
-              session.config.interactive ? 'Когда соберётесь, открой панель судьи — бот выдаст первый трек.' : 'Панель судьи — ниже. Когда соберётесь, нажми «Все на месте».'
-            }`
-          : `⚖️ Согласие отправлено: матч ${matchLabel(judged)}, ${a} — ${b}. Ждём подтверждения игроков.`,
+          ? `${invite.ready({ match, a, b, until })}\n${session.config.interactive ? invite.readyDemo : invite.readyPanel}`
+          : invite.accepted({ match, a, b }),
       });
     }
   }
@@ -379,12 +383,14 @@ function renderPlayer(session: DrawSession, userId: UserId): OutgoingMessage[] {
 
 function matchCard(session: DrawSession, userId: UserId, match: BracketMatch): OutgoingMessage {
   const opponentId = playersIn(session, match).find((id) => id !== userId)!;
-  const deadline = formatDate(session.deadlines[match.round - 1]!);
+  const deadline = roundDeadline(session, match.round);
   const assignment = session.judges[match.id];
+  const texts = tx(session, userId);
+  const { card } = texts;
   const lines = [
-    `🎯 Отбор · ${match.round}-й круг · матч ${matchLabel(match)}`,
-    `Соперник: ${nameOf(session, opponentId)} (${session.config.usernames[opponentId] ?? 'без username'})`,
-    `Срок: до ${deadline}`,
+    card.title({ round: match.round, match: matchLabel(match) }),
+    card.opponent({ name: nameOf(session, opponentId), contact: session.config.usernames[opponentId] ?? texts.noUsername }),
+    ...(deadline ? [card.until({ until: texts.until({ date: formatDate(deadline) }) })] : []),
     '',
   ];
   const buttons: Button[][] = [];
@@ -392,31 +398,30 @@ function matchCard(session: DrawSession, userId: UserId, match: BracketMatch): O
 
   if (!assignment) {
     if (mode.kind === 'pickJudge') {
-      lines.push('Кого позвать судьёй? Сначала — те, кто свободен в этом круге.');
+      lines.push(card.pickJudge);
       const candidates = judgeCandidates(session, match).slice(0, MAX_JUDGE_SUGGESTIONS);
       for (let i = 0; i < candidates.length; i += 2) {
         buttons.push(candidates.slice(i, i + 2).map((p) => ({ label: p.name, data: `judge:${p.id}` })));
       }
-      lines.push(`Нет в списке — отправь ссылку: t.me/${session.config.botUsername}?start=judge_${match.id}`);
-      buttons.push([{ label: 'Отмена', data: 'cancel' }]);
+      lines.push(card.judgeLink({ link: `t.me/${session.config.botUsername}?start=judge_${match.id}` }));
+      buttons.push([{ label: texts.buttons.cancel, data: 'cancel' }]);
     } else {
-      lines.push('Договоритесь о времени в личке или в общем чате, потом выберите судью — он придёт с телефоном и включит треки.');
-      buttons.push([{ label: '⚖️ Выбрать судью', data: 'pickJudge' }]);
+      lines.push(card.arrange);
+      buttons.push([{ label: texts.buttons.pickJudge, data: 'pickJudge' }]);
     }
   } else {
-    const judgeName = nameOf(session, assignment.candidate);
+    const judge = nameOf(session, assignment.candidate);
     if (!assignment.accepted) {
-      lines.push(`⚖️ Судья: ${judgeName} — ждём согласия.`);
+      lines.push(card.judgeWaiting({ judge }));
     } else if (assignment.confirmedBy.length < 2) {
       if (assignment.confirmedBy.includes(userId)) {
-        lines.push(`⚖️ Судья: ${judgeName} — согласие есть. Ждём подтверждения соперника.`);
+        lines.push(card.judgeAgreed({ judge }));
       } else {
-        const by = assignment.proposedBy ? `${nameOf(session, assignment.proposedBy)} предлагает` : 'Пришёл по ссылке';
-        lines.push(`⚖️ ${by} судью: ${judgeName}. Согласие судьи получено.`);
-        buttons.push([{ label: '✅ Подтверждаю судью', data: `confirmJudge:${match.id}` }]);
+        lines.push(assignment.proposedBy ? card.judgeProposed({ by: nameOf(session, assignment.proposedBy), judge }) : card.judgeByLink({ judge }));
+        buttons.push([{ label: texts.buttons.confirmJudge, data: `confirmJudge:${match.id}` }]);
       }
     } else {
-      lines.push(`✅ Всё готово: судья ${judgeName}. Встречайтесь — судья откроет матч в боте.`);
+      lines.push(card.ready({ judge }));
     }
   }
   return { kind: 'message', to: userId, slot: 'card', text: lines.join('\n'), buttons: buttons.length ? buttons : undefined };
@@ -425,12 +430,14 @@ function matchCard(session: DrawSession, userId: UserId, match: BracketMatch): O
 function byeCard(session: DrawSession, userId: UserId, bye: BracketMatch): OutgoingMessage {
   const next = session.bracket!.rounds[1]?.find((m) => m.slots.some((s) => s.kind === 'winnerOf' && s.matchId === bye.id));
   const other = next?.slots.find((s) => !(s.kind === 'winnerOf' && s.matchId === bye.id));
-  const lines = [`🎟 Проход без игры в 1-м круге.`];
+  const texts = tx(session, userId);
+  const lines = [texts.bye.title];
   if (next && other) {
-    lines.push(`Следующий матч ${matchLabel(next)}: соперник — ${describeSlot(session, other)}.`);
-    lines.push(`Срок: до ${formatDate(session.deadlines[next.round - 1]!)}`);
+    lines.push(texts.bye.next({ match: matchLabel(next), opponent: describeSlot(session, other, userId) }));
+    const deadline = roundDeadline(session, next.round);
+    if (deadline) lines.push(texts.bye.until({ until: texts.until({ date: formatDate(deadline) }) }));
   }
-  lines.push('', 'Пока можно судить чужие матчи — тебя могут позвать.');
+  lines.push('', texts.bye.judge);
   return { kind: 'message', to: userId, slot: 'card', text: lines.join('\n') };
 }
 
@@ -459,7 +466,8 @@ function renderOrganizer(session: DrawSession): OutgoingMessage {
   const lines = ['🎲 Сетка отбора опубликована', ''];
   bracket.rounds.forEach((round, r) => {
     const played = round.filter((m) => !m.isBye);
-    lines.push(`${r + 1}-й круг · до ${formatDate(session.deadlines[r]!)} · ${played.length} ${plural(played.length, 'матч', 'матча', 'матчей')}`);
+    const deadline = roundDeadline(session, r + 1);
+    lines.push(`${r + 1}-й круг${deadline ? ` · до ${formatDate(deadline)}` : ''} · ${played.length} ${plural(played.length, 'матч', 'матча', 'матчей')}`);
     for (const match of played) {
       const judge = session.judges[match.id];
       const judgeMark = !judge ? '' : judge.confirmedBy.length === 2 ? ` · ⚖️ ${nameOf(session, judge.candidate)}` : ' · ⚖️ выбирают';
@@ -475,19 +483,19 @@ function renderOrganizer(session: DrawSession): OutgoingMessage {
   if (session.journal.length > 0) {
     lines.push('', '🗒 Журнал:', ...session.journal.slice(-5).map((entry) => `• ${entry}`));
   }
-  const buttons: Button[][] = bracket.rounds.map((_, r) => [
-    { label: `📅 Срок ${r + 1}-го круга +2 дня`, data: `shift:${r + 1}` },
-  ]);
-  return { kind: 'message', to, slot: 'draw', text: lines.join('\n'), buttons };
+  // Без сроков продлевать нечего.
+  const buttons: Button[][] = session.deadlines.map((_, r) => [{ label: `📅 Продлить ${r + 1}-й круг на 2 дня`, data: `shift:${r + 1}` }]);
+  return { kind: 'message', to, slot: 'draw', text: lines.join('\n'), buttons: buttons.length ? buttons : undefined };
 }
 
-function describeSlot(session: DrawSession, slot: Slot): string {
+// to — кому описываем: «победитель №1.2» на его языке; организатору — основной стиль.
+function describeSlot(session: DrawSession, slot: Slot, to: UserId = session.config.organizer.id): string {
   if (slot.kind === 'player') return nameOf(session, slot.id);
   if (slot.kind === 'bye') return '—';
   const source = findMatch(session.bracket!, slot.matchId)!;
-  if (source.isBye) return describeSlot(session, source.slots[0]);
+  if (source.isBye) return describeSlot(session, source.slots[0], to);
   const winner = session.results[source.id];
-  return winner ? nameOf(session, winner) : `победитель ${matchLabel(source)}`;
+  return winner ? nameOf(session, winner) : tx(session, to).winnerOf({ match: matchLabel(source) });
 }
 
 export function qualifiedIds(session: DrawSession): UserId[] {
@@ -526,6 +534,16 @@ const MONTHS = ['января', 'февраля', 'марта', 'апреля', 
 export function formatDate(iso: string): string {
   const date = new Date(`${iso}T00:00:00Z`);
   return `${date.getUTCDate()} ${MONTHS[date.getUTCMonth()]}`;
+}
+
+// Срок круга, ISO-дата; undefined — турнир без сроков.
+export function roundDeadline(session: DrawSession, round: number): string | undefined {
+  return session.deadlines[round - 1];
+}
+
+// Тексты пар для участника — в его стиле.
+function tx(session: DrawSession, userId: UserId) {
+  return textsOf(session.config.styles, userId).draw;
 }
 
 function addDays(iso: string, days: number): string {

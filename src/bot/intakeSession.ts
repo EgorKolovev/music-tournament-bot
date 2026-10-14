@@ -19,6 +19,7 @@ import { latestStart, rollStart, shiftStart } from '../domain/submission/fragmen
 import { splitPools, type PoolSplit } from '../domain/submission/pools.ts';
 import { fromText } from '../domain/submission/titles.ts';
 import { formatClock, parseClock, plural } from '../shared/text.ts';
+import { textsOf } from '../texts/index.ts';
 import type { Participant } from './matchSession.ts';
 import type { Button, Incoming, Outgoing, OutgoingMessage, UserId } from './protocol.ts';
 
@@ -40,6 +41,8 @@ export interface IntakeSessionConfig {
   // Присылают песни, но не играют: их песни идут в пулы, а сами они не попадают ни в жеребьёвку,
   // ни в недобравших. Передумать можно до закрытия сбора. В снимках прошлых версий поля нет.
   songsOnly?: UserId[];
+  // Стиль текстов участника (src/texts); нет — основной.
+  styles?: Record<UserId, string>;
 }
 
 type PickAction = 'edit' | 'remove' | 'start' | 'listen';
@@ -87,19 +90,27 @@ export interface IntakeStep {
   out: Outgoing[];
 }
 
-const REJECT_TEXT: Record<RejectReason, string> = {
-  too_large: 'больше 20 МБ',
-  bad_format: 'нужен MP3 или M4A',
-  corrupt: 'файл не читается',
-  duplicate_own: 'уже есть в твоём списке',
-  quota_full: 'сверх 10 песен',
-};
+// Тексты сбора для участника — в его стиле.
+function tx(session: IntakeSession, userId: UserId) {
+  return textsOf(session.config.styles, userId).intake;
+}
+
+// Почему песня не подошла; лимит песен — из настроек турнира.
+function rejectText(session: IntakeSession, userId: UserId, reason: RejectReason): string {
+  const { reject } = tx(session, userId);
+  const texts: Record<RejectReason, string> = {
+    too_large: reject.tooLarge,
+    bad_format: reject.badFormat,
+    corrupt: reject.corrupt,
+    duplicate_own: reject.duplicateOwn,
+    quota_full: reject.quotaFull({ max: session.config.rules.maxSubmissions }),
+  };
+  return texts[reason];
+}
 
 // Запас подходящих песен на один короткий отборочный матч (раздел 4 пересмотра механики).
 const MIN_SONGS_PER_QUALIFIER = 10;
 
-const TITLE_FORMAT = 'Ответь сообщением в формате «Исполнитель — Название».';
-const START_FORMAT = 'Напиши время, например 1:15; 0 — с начала. Или 🎲 — случайное место.';
 
 // Сдвиги начала кнопками под фрагментом, секунд.
 const SHIFTS = [-10, -5, 5, 10];
@@ -126,22 +137,28 @@ export function openIntakeSession(config: IntakeSessionConfig): IntakeStep {
   for (const s of pendingProcessing(intake)) intake = completeProcessing(intake, s.id, true);
 
   const session: IntakeSession = { config, intake, ui, closed: null };
-  const welcome = config.participants.map((p) => welcomeMessage(session, p));
-  return { session, out: [...welcome, ...render(session)] };
+  return { session, out: render(session) };
 }
 
+// Вводное к сбору — от лица организаторов («мы»), в отличие от остальных сообщений бота;
+// что делает бот, рассказано о нём в третьем лице.
+// Лимит песен и длина фрагмента — из настроек: поменял их организатор — сообщение правится
+// на месте, как и список песен.
 function welcomeMessage(session: IntakeSession, p: Participant): OutgoingMessage {
+  const { rules, fragmentSec } = session.config;
+  const { welcome } = tx(session, p.id);
   const lines = [
-    `Привет, ${p.name}! Собираем песни для турнира.`,
+    welcome.hello({ name: p.name }),
     '',
-    `Пришли до ${session.config.rules.maxSubmissions} песен — пересылай пачкой, хоть все сразу, из @Music_to_you_bot или откуда удобно.`,
-    'Исполнителя и название возьму из файла; если не получится — спрошу.',
-    `Судья услышит фрагмент до ${session.config.fragmentSec} секунд — с начала песни, с места, которое выберешь сам, или со случайного.`,
-    'На отбор и финал песни разделю сам после закрытия сбора.',
+    welcome.send({ max: rules.maxSubmissions }),
+    '',
+    welcome.titles,
+    '',
+    welcome.fragment({ sec: fragmentSec }),
+    '',
+    welcome.pools,
   ];
-  if (isSongsOnly(session, p.id)) {
-    lines.push('', '🎁 Ты только присылаешь песни: в жеребьёвку не попадёшь, но тебя могут позвать судить. Передумаешь — кнопка под списком.');
-  }
+  if (isSongsOnly(session, p.id)) lines.push('', welcome.songsOnly);
   return { kind: 'message', to: p.id, slot: 'welcome', text: lines.join('\n') };
 }
 
@@ -166,13 +183,13 @@ export function handleIntake(session: IntakeSession, input: Incoming): IntakeSte
     const ui = session.ui[input.from];
     if (!ui) return { session, out: [] };
     if (input.kind === 'button') {
-      if (session.closed) return { session, out: [{ kind: 'toast', to: input.from, text: 'Сбор уже закрыт' }] };
+      if (session.closed) return { session, out: [{ kind: 'toast', to: input.from, text: tx(session, input.from).toast.closed }] };
       const result = handleButton(session, input.from, input.data);
       if ('toast' in result) return { session, out: [{ kind: 'toast', to: input.from, text: result.toast }] };
       next = result.session;
     } else {
       if (session.closed) {
-        next = setUi(session, input.from, { notice: 'Сбор уже закрыт — новые песни и правки не принимаются.' });
+        next = setUi(session, input.from, { notice: tx(session, input.from).notice.closed });
       } else {
         next = input.kind === 'files' ? handleFiles(session, input.from, input.files) : handleText(session, input.from, input.text);
       }
@@ -184,7 +201,7 @@ export function handleIntake(session: IntakeSession, input: Incoming): IntakeSte
   return emit(next, before, author);
 }
 
-// Участник зарегистрировался в боте во время сбора: получает приветствие и пустой список.
+// Участник зарегистрировался в боте во время сбора: получает вводное и пустой список.
 export function joinIntake(session: IntakeSession, participant: Participant, songsOnly = false): IntakeStep {
   if (allParticipants(session.config).some((p) => p.id === participant.id)) return { session, out: [] };
   const before = render(session);
@@ -195,8 +212,7 @@ export function joinIntake(session: IntakeSession, participant: Participant, son
   };
   const ui = { ...session.ui, [participant.id]: newUi() };
   const next: IntakeSession = { ...session, config, ui };
-  const step = emit(next, before);
-  return { session: step.session, out: [welcomeMessage(next, participant), ...step.out] };
+  return emit(next, before);
 }
 
 export function pendingSubmissions(session: IntakeSession): Submission[] {
@@ -236,7 +252,7 @@ export function admittedPlayers(session: IntakeSession): Participant[] {
 // Действует и после закрытия сбора — пока жеребьёвка не началась.
 export function leaveIntake(session: IntakeSession, userId: UserId): IntakeStep {
   const before = render(session);
-  const notice = '🎁 Ты больше не играешь — присланные песни остаются в турнире.';
+  const notice = tx(session, userId).notice.left;
   return emit(setUi(setSongsOnly(session, userId, true), userId, { mode: { kind: 'idle' }, notice }), before);
 }
 
@@ -263,8 +279,9 @@ function handleFiles(session: IntakeSession, from: UserId, files: AudioFile[]): 
 
   const added = submissionsOf(intake, from).filter((s) => !known.has(s.id));
   const rejected = added.filter((s) => s.rejection).length;
-  const word = plural(added.length, 'файл', 'файла', 'файлов');
-  const notice = `Получил ${added.length} ${word}${rejected ? `, не подошло: ${rejected}` : ''}.`;
+  const { notice: texts } = tx(session, from);
+  const thanks = added.length > 0 && !rejected ? texts.thanks({ total: submissionsOf(intake, from).length }) : '';
+  const notice = [texts.received({ count: added.length, rejected }), thanks].filter(Boolean).join(' ');
   return setUi({ ...session, intake }, from, { notice, mode: { kind: 'idle' } });
 }
 
@@ -272,70 +289,67 @@ function handleText(session: IntakeSession, from: UserId, text: string): IntakeS
   const { mode } = session.ui[from]!;
   if (mode.kind === 'awaitStart') return handleStartText(session, from, mode.submissionId, text);
   const target = titleTarget(session, from);
-  if (!target) {
-    return setUi(session, from, { notice: 'Чтобы поправить название, нажми «✏️ Исправить» под списком.' });
-  }
+  const { notice: texts } = tx(session, from);
+  if (!target) return setUi(session, from, { notice: texts.editHint });
   const meta = fromText(text);
-  if (!meta) {
-    return setUi(session, from, { notice: `Не разобрал «${text}»: исполнителя и название нужно разделить тире.` });
-  }
+  if (!meta) return setUi(session, from, { notice: texts.badTitle({ text }) });
 
   const intake = setTitle(session.intake, target.id, meta);
   const updated = intake.submissions.find((s) => s.id === target.id)!;
+  const label = `${meta.artist} — ${meta.title}`;
   const notice = updated.rejection
-    ? `«${meta.artist} — ${meta.title}»: ${REJECT_TEXT[updated.rejection]}. Пришли другую песню.`
-    : `Записал: ${meta.artist} — ${meta.title}.`;
+    ? texts.titleRejected({ label, reason: rejectText(session, from, updated.rejection) })
+    : texts.titleSaved({ label });
   return setUi({ ...session, intake }, from, { notice, mode: { kind: 'idle' } });
 }
 
 type ButtonResult = { session: IntakeSession } | { toast: string };
 
 function handleButton(session: IntakeSession, from: UserId, data: string): ButtonResult {
+  const { notice: texts, toast } = tx(session, from);
   if (data === 'cancel') return { session: setUi(session, from, { mode: { kind: 'idle' }, notice: null }) };
   if (data === 'randomAll') return randomAll(session, from);
   if (data === 'role:songs' || data === 'role:play') {
     const songsOnly = data === 'role:songs';
-    const notice = songsOnly
-      ? '🎁 Готово: присылаешь песни, но не играешь. Передумаешь — кнопка ниже.'
-      : '🎤 Готово: ты снова играешь.';
+    const notice = songsOnly ? texts.songsOnly : texts.playing;
     return { session: setUi(setSongsOnly(session, from, songsOnly), from, { mode: { kind: 'idle' }, notice }) };
   }
 
   const shift = /^shift:(\w+):(-?\d+)$/.exec(data);
   if (shift) {
     const target = session.intake.submissions.find((s) => s.id === shift[1] && s.owner === from && !s.rejection);
-    if (!target) return { toast: 'Этой песни уже нет в списке' };
+    if (!target) return { toast: toast.gone };
     const startSec = shiftStart(target, Number(shift[2]), session.config.fragmentSec);
-    if (startSec === target.startSec) return { toast: 'Дальше сдвигать некуда' };
+    if (startSec === target.startSec) return { toast: toast.noFurther };
     const intake = setStart(session.intake, target.id, startSec);
     return { session: setUi({ ...session, intake }, from, { preview: target.id, previewDone: false }) };
   }
 
   const done = /^done:(\w+)$/.exec(data);
   if (done) {
-    if (session.ui[from]!.preview !== done[1]) return { toast: 'Этот фрагмент уже не актуален' };
+    if (session.ui[from]!.preview !== done[1]) return { toast: toast.stalePreview };
     return { session: setUi(session, from, { previewDone: true }) };
   }
 
   const roll = /^random:(\w+)$/.exec(data);
   if (roll) {
     const target = session.intake.submissions.find((s) => s.id === roll[1] && s.owner === from && !s.rejection);
-    if (!target) return { toast: 'Этой песни уже нет в списке' };
+    if (!target) return { toast: toast.gone };
     return randomStart(session, from, target);
   }
 
   const pick = /^pick:(edit|remove|start|listen)$/.exec(data);
   if (pick) {
     const action = pick[1] as PickAction;
-    if (candidates(session, from, action).length === 0) return { toast: 'Пока нечего выбирать' };
+    if (candidates(session, from, action).length === 0) return { toast: toast.nothing };
     return { session: setUi(session, from, { mode: { kind: 'pick', action }, notice: null }) };
   }
 
   const chosen = /^n:(\w+)$/.exec(data);
   const submission = chosen && session.intake.submissions.find((s) => s.id === chosen[1] && s.owner === from);
-  if (!submission) return { toast: 'Этой песни уже нет в списке' };
+  if (!submission) return { toast: toast.gone };
   const { mode } = session.ui[from]!;
-  if (mode.kind !== 'pick') return { toast: 'Сначала выбери действие под списком' };
+  if (mode.kind !== 'pick') return { toast: toast.pickFirst };
 
   if (mode.action === 'edit') {
     return { session: setUi(session, from, { mode: { kind: 'awaitTitle', submissionId: submission.id }, notice: null }) };
@@ -350,7 +364,7 @@ function handleButton(session: IntakeSession, from: UserId, data: string): Butto
   }
   const intake = remove(session.intake, submission.id);
   return {
-    session: setUi({ ...session, intake }, from, { mode: { kind: 'idle' }, notice: `Убрал «${labelOf(submission)}».` }),
+    session: setUi({ ...session, intake }, from, { mode: { kind: 'idle' }, notice: texts.removed({ label: labelOf(session, from, submission) }) }),
   };
 }
 
@@ -358,20 +372,20 @@ function handleButton(session: IntakeSession, from: UserId, data: string): Butto
 
 function handleStartText(session: IntakeSession, from: UserId, submissionId: string, text: string): IntakeSession {
   const target = session.intake.submissions.find((s) => s.id === submissionId);
-  if (!target || target.rejection) return setUi(session, from, { mode: { kind: 'idle' }, notice: 'Этой песни уже нет в списке.' });
+  const { notice: texts } = tx(session, from);
+  if (!target || target.rejection) return setUi(session, from, { mode: { kind: 'idle' }, notice: texts.gone });
   const startSec = parseClock(text);
-  if (startSec === null) return setUi(session, from, { notice: `Не разобрал «${text}». ${START_FORMAT}` });
-  const latest = latestStart(target, session.config.fragmentSec);
+  if (startSec === null) return setUi(session, from, { notice: texts.badStart({ text }) });
+  const { fragmentSec } = session.config;
+  const latest = latestStart(target, fragmentSec);
   if (startSec > latest) {
     const duration = formatClock(target.file.durationSec!);
-    return setUi(session, from, {
-      notice: `Песня длится ${duration}, фрагмент ${session.config.fragmentSec} с — начало не позже ${formatClock(latest)}.`,
-    });
+    return setUi(session, from, { notice: texts.tooLate({ duration, sec: fragmentSec, latest: formatClock(latest) }) });
   }
   const intake = setStart(session.intake, target.id, startSec);
   return setUi({ ...session, intake }, from, {
     mode: { kind: 'idle' },
-    notice: `Песня ${numberOf(session, from, target.id)} начнётся с ${formatClock(startSec)}.`,
+    notice: texts.start({ n: numberOf(session, from, target.id), start: formatClock(startSec) }),
     preview: target.id,
     previewPostedAt: -1,
     previewDone: false,
@@ -380,10 +394,11 @@ function handleStartText(session: IntakeSession, from: UserId, submissionId: str
 
 // Случайное начало одной песни: из подсказки «⏱ Начало» или из-под фрагмента.
 function randomStart(session: IntakeSession, from: UserId, target: Submission): ButtonResult {
-  if (target.file.durationSec === undefined) return { toast: 'Не знаю длину песни — напиши время сам' };
+  const { notice: texts, toast } = tx(session, from);
+  if (target.file.durationSec === undefined) return { toast: toast.noDuration };
   const ui = session.ui[from]!;
   const roll = rollStart(target, session.config.fragmentSec, session.config.seed, ui.rolls);
-  if (!roll) return { toast: 'Песня короткая — случайное место не выбрать' };
+  if (!roll) return { toast: toast.tooShort };
   const { startSec, rolls } = roll;
   const intake = setStart(session.intake, target.id, startSec);
   const fromPrompt = ui.mode.kind === 'awaitStart';
@@ -394,7 +409,7 @@ function randomStart(session: IntakeSession, from: UserId, target: Submission): 
       previewDone: false,
       ...(fromPrompt && {
         mode: { kind: 'idle' },
-        notice: `Песня ${numberOf(session, from, target.id)} начнётся с ${formatClock(startSec)} — выбрал случайно.`,
+        notice: texts.randomStart({ n: numberOf(session, from, target.id), start: formatClock(startSec) }),
         previewPostedAt: -1,
       }),
     }),
@@ -404,7 +419,8 @@ function randomStart(session: IntakeSession, from: UserId, target: Submission): 
 // Случайное начало всем песням участника разом — для тех, кому выбирать незачем.
 function randomAll(session: IntakeSession, from: UserId): ButtonResult {
   const songs = ordered(session, from).filter((s) => !s.rejection);
-  if (songs.length === 0) return { toast: 'Пока нечего выбирать' };
+  const { notice: texts, toast } = tx(session, from);
+  if (songs.length === 0) return { toast: toast.nothing };
   let { intake } = session;
   let rolls = session.ui[from]!.rolls;
   let changed = 0;
@@ -415,12 +431,8 @@ function randomAll(session: IntakeSession, from: UserId): ButtonResult {
     intake = setStart(intake, song.id, roll.startSec);
     changed++;
   }
-  if (changed === 0) return { toast: 'Песни короткие или без длины — случайное начало не выбрать' };
-  const kept = songs.length - changed;
-  const notice =
-    `🎲 Случайное начало у ${changed} ${plural(changed, 'песни', 'песен', 'песен')}` +
-    (kept > 0 ? `, у ${kept} — прежнее: короткие или без длины` : '') +
-    '. Послушать — «🎧 Послушать».';
+  if (changed === 0) return { toast: toast.allTooShort };
+  const notice = texts.randomAll({ changed, kept: songs.length - changed });
   return { session: setUi({ ...session, intake }, from, { mode: { kind: 'idle' }, rolls, notice }) };
 }
 
@@ -445,7 +457,7 @@ function handleOrganizer(session: IntakeSession, data: string): ButtonResult {
     const decisions = { ...session.closed.decisions, [userId!]: verdict as AdmissionDecision };
     return { session: { ...session, closed: { ...session.closed, decisions } } };
   }
-  return { toast: 'Сейчас это действие недоступно' };
+  return { toast: 'Сейчас эта кнопка не работает' };
 }
 
 // --- Общее ------------------------------------------------------------------
@@ -507,11 +519,13 @@ function emit(next: IntakeSession, before: OutgoingMessage[], author?: UserId): 
 export function render(session: IntakeSession): OutgoingMessage[] {
   const { participants } = session.config;
   const previews = participants.flatMap((p) => renderPreview(session, p.id) ?? []);
-  return [...participants.map((p) => renderList(session, p.id)), ...previews, renderOrganizer(session)];
+  const own = participants.flatMap((p) => [welcomeMessage(session, p), renderList(session, p.id)]);
+  return [...own, ...previews, renderOrganizer(session)];
 }
 
 function renderList(session: IntakeSession, userId: UserId): OutgoingMessage {
-  const { maxSubmissions } = session.config.rules;
+  const { maxSubmissions: max } = session.config.rules;
+  const { list: texts } = tx(session, userId);
   const ui = session.ui[userId]!;
   const list = ordered(session, userId);
   const number = new Map(list.map((s, i) => [s.id, i + 1]));
@@ -519,32 +533,19 @@ function renderList(session: IntakeSession, userId: UserId): OutgoingMessage {
   const lines: string[] = [];
 
   const songsOnly = isSongsOnly(session, userId);
-  if (session.closed) {
-    lines.push(
-      `🔒 Сбор закрыт · принято ${accepted} из ${maxSubmissions}`,
-      songsOnly ? 'Спасибо за песни! Ты не играешь, но тебя могут позвать судить.' : 'Дальше жеребьёвка — пару пришлю сюда.',
-    );
-  } else if (songsOnly) {
-    lines.push(
-      `🎁 Твои песни · принято ${accepted} из ${maxSubmissions}`,
-      'Ты только присылаешь песни — в жеребьёвку не попадёшь. Проверь названия: по ним судья засчитывает ответы.',
-    );
-  } else if (accepted === maxSubmissions) {
-    lines.push(`✅ Все ${maxSubmissions} песен приняты`, 'Можно менять до закрытия сбора.');
-  } else {
-    lines.push(
-      `🎵 Твои песни · принято ${accepted} из ${maxSubmissions}`,
-      'Проверь названия — по ним судья засчитывает ответы.',
-    );
-  }
+  if (session.closed) lines.push(texts.closed({ accepted, max }), songsOnly ? texts.closedSongsOnly : texts.closedPlaying);
+  else if (songsOnly) lines.push(texts.songsOnly({ accepted, max }), texts.songsOnlyHint);
+  else if (accepted === max) lines.push(texts.full({ max }), texts.fullHint);
+  else lines.push(texts.progress({ accepted, max }), texts.progressHint);
 
   const active = list.filter((s) => !s.rejection);
   if (active.length > 0) lines.push('');
-  for (const s of active) lines.push(`${number.get(s.id)}. ${labelOf(s)} ${statusMark(s)} · с ${formatClock(s.startSec)}`);
+  const label = (s: Submission) => labelOf(session, userId, s);
+  for (const s of active) lines.push(texts.song({ n: number.get(s.id)!, label: label(s), mark: statusMark(s), start: formatClock(s.startSec) }));
   const rejected = list.filter((s) => s.rejection);
   if (rejected.length > 0) {
-    lines.push('', 'Не подошло — пришли замену:');
-    for (const s of rejected) lines.push(`${number.get(s.id)}. ${labelOf(s)} — ${REJECT_TEXT[s.rejection!]}`);
+    lines.push('', texts.rejectedTitle);
+    for (const s of rejected) lines.push(texts.rejected({ n: number.get(s.id)!, label: label(s), reason: rejectText(session, userId, s.rejection!) }));
   }
 
   const footer: string[] = [];
@@ -552,19 +553,20 @@ function renderList(session: IntakeSession, userId: UserId): OutgoingMessage {
   const target = session.closed ? undefined : titleTarget(session, userId);
   const { mode } = ui;
   if (target && mode.kind !== 'pick' && mode.kind !== 'awaitStart') {
+    const n = number.get(target.id)!;
     footer.push(
       mode.kind === 'awaitTitle'
-        ? `✏️ Песня ${number.get(target.id)}: сейчас «${labelOf(target)}». ${TITLE_FORMAT}`
-        : `✏️ Песня ${number.get(target.id)} (${target.file.fileName ?? 'без имени'}): не нашёл название. ${TITLE_FORMAT}`,
+        ? texts.askTitle({ n, label: label(target) })
+        : texts.noTitle({ n, file: target.file.fileName ?? texts.noName }),
     );
   }
   if (mode.kind === 'awaitStart') {
     const song = list.find((s) => s.id === mode.submissionId);
     if (song) {
-      footer.push(`⏱ Песня ${number.get(song.id)}: сейчас с ${formatClock(song.startSec)}. С какого момента её играть? ${START_FORMAT}`);
+      footer.push(texts.askStart({ n: number.get(song.id)!, start: formatClock(song.startSec) }));
     }
   }
-  if (mode.kind === 'pick') footer.push(PICK_PROMPT[mode.action]);
+  if (mode.kind === 'pick') footer.push(texts.pick[mode.action]);
   if (footer.length > 0) lines.push('', ...footer);
 
   return {
@@ -583,47 +585,33 @@ function listButtons(
   number: Map<string, number>,
 ): Button[][] | undefined {
   const { mode } = session.ui[userId]!;
+  const { buttons: texts } = tx(session, userId);
+  const cancel: Button = { label: texts.cancel, data: 'cancel' };
   if (mode.kind === 'pick') {
     const items = candidates(session, userId, mode.action);
     const rows: Button[][] = [];
     for (let i = 0; i < items.length; i += 5) {
       rows.push(items.slice(i, i + 5).map((s) => ({ label: String(number.get(s.id)), data: `n:${s.id}` })));
     }
-    return [...rows, [{ label: 'Отмена', data: 'cancel' }]];
+    return [...rows, [cancel]];
   }
-  if (mode.kind === 'awaitStart') {
-    return [
-      [
-        { label: '🎲 Случайно', data: `random:${mode.submissionId}` },
-        { label: 'Отмена', data: 'cancel' },
-      ],
-    ];
-  }
-  if (mode.kind === 'awaitTitle') return [[{ label: 'Отмена', data: 'cancel' }]];
-  const role: Button = isSongsOnly(session, userId)
-    ? { label: '🎤 Всё-таки играю', data: 'role:play' }
-    : { label: '🎁 Не играю, только песни', data: 'role:songs' };
+  if (mode.kind === 'awaitStart') return [[{ label: texts.random, data: `random:${mode.submissionId}` }, cancel]];
+  if (mode.kind === 'awaitTitle') return [[cancel]];
+  const role: Button = isSongsOnly(session, userId) ? { label: texts.play, data: 'role:play' } : { label: texts.songsOnly, data: 'role:songs' };
   if (list.length === 0) return [[role]];
   return [
     [
-      { label: '✏️ Исправить', data: 'pick:edit' },
-      { label: '🗑 Убрать', data: 'pick:remove' },
+      { label: texts.edit, data: 'pick:edit' },
+      { label: texts.remove, data: 'pick:remove' },
     ],
     [
-      { label: '⏱ Начало', data: 'pick:start' },
-      { label: '🎧 Послушать', data: 'pick:listen' },
+      { label: texts.start, data: 'pick:start' },
+      { label: texts.listen, data: 'pick:listen' },
     ],
-    [{ label: '🎲 Случайное начало всем', data: 'randomAll' }],
+    [{ label: texts.randomAll, data: 'randomAll' }],
     [role],
   ];
 }
-
-const PICK_PROMPT: Record<PickAction, string> = {
-  edit: 'Какую песню исправить?',
-  remove: 'Какую песню убрать?',
-  start: 'Для какой песни выбрать начало?',
-  listen: 'Какую песню послушать?',
-};
 
 // Фрагмент песни так, как его услышит судья, и кнопки сдвига начала.
 function renderPreview(session: IntakeSession, userId: UserId): OutgoingMessage | undefined {
@@ -631,6 +619,9 @@ function renderPreview(session: IntakeSession, userId: UserId): OutgoingMessage 
   const list = ordered(session, userId);
   const song = list.find((s) => s.id === preview);
   if (!song || song.rejection) return undefined;
+  const { preview: texts, buttons } = tx(session, userId);
+  const n = numberOf(session, userId, song.id);
+  const label = labelOf(session, userId, song);
   const audio: OutgoingMessage['audio'] = song.gameFileId
     ? { title: 'Трек', performer: 'Музыкальный турнир', fileId: song.gameFileId }
     : undefined;
@@ -640,23 +631,14 @@ function renderPreview(session: IntakeSession, userId: UserId): OutgoingMessage 
       kind: 'message',
       to: userId,
       slot: 'preview',
-      text: `✅ Песня ${numberOf(session, userId, song.id)}: ${labelOf(song)}\nНачнётся с ${formatClock(song.startSec)}.`,
+      text: texts.done({ n, label, start: formatClock(song.startSec) }),
       audio,
     };
   }
 
-  const status =
-    song.processing === 'pending'
-      ? '⏳ Нарезаю фрагмент…'
-      : song.gameFileId
-        ? 'Так её услышит судья.'
-        : 'Фрагменты сейчас не нарезаются — судья включит песню сам с этого места.';
-  const lines = [
-    `🎧 Песня ${numberOf(session, userId, song.id)}: ${labelOf(song)}`,
-    `Начало ${formatClock(song.startSec)} · до ${session.config.fragmentSec} с`,
-    status,
-  ];
-  if (!session.closed) lines.push('Сдвинуть начало или выбрать случайно:');
+  const status = song.processing === 'pending' ? texts.cutting : song.gameFileId ? texts.ready : texts.noCut;
+  const lines = [texts.title({ n, label }), texts.start({ start: formatClock(song.startSec), sec: session.config.fragmentSec }), status];
+  if (!session.closed) lines.push(texts.shift);
 
   return {
     kind: 'message',
@@ -669,8 +651,8 @@ function renderPreview(session: IntakeSession, userId: UserId): OutgoingMessage 
       : [
           SHIFTS.map((d) => ({ label: d < 0 ? `−${-d} с` : `+${d} с`, data: `shift:${song.id}:${d}` })),
           [
-            { label: '🎲 Случайно', data: `random:${song.id}` },
-            { label: '✅ Готово', data: `done:${song.id}` },
+            { label: buttons.random, data: `random:${song.id}` },
+            { label: buttons.done, data: `done:${song.id}` },
           ],
         ],
   };
@@ -686,13 +668,13 @@ function renderOrganizer(session: IntakeSession): OutgoingMessage {
   const acceptedTotal = intake.submissions.filter((s) => statusOf(s) === 'accepted').length;
   const full = playing.filter((p) => acceptedCount(session, p.id) === maxSubmissions).length;
   const short = underSubmitted(session);
-  const lines = [closed ? '🔒 Сбор закрыт' : '📥 Сбор треков', ''];
+  const lines = [closed ? '🔒 Сбор закрыт' : '📥 Сбор песен', ''];
 
   const who = donors.length > 0 ? ` (играют ${playing.length}, только песни ${donors.length})` : '';
   lines.push(
     `Участников: ${people.length}${who} · сдали все ${maxSubmissions}: ${full}`,
-    `Принято заявок: ${acceptedTotal} · уникальных песен: ${songs.length}` +
-      (acceptedTotal > songs.length ? ` (склеено дублей: ${acceptedTotal - songs.length})` : ''),
+    `Принято песен: ${acceptedTotal} · разных: ${songs.length}` +
+      (acceptedTotal > songs.length ? ` (одинаковых склеено: ${acceptedTotal - songs.length})` : ''),
   );
   if (donors.length > 0) {
     lines.push(`🎁 Только песни: ${donors.map((p) => `${p.name} — ${acceptedCount(session, p.id)}`).join(', ')}`);
@@ -719,7 +701,7 @@ function renderOrganizer(session: IntakeSession): OutgoingMessage {
     lines.push('', `Сдали меньше ${maxSubmissions} — без решения в жеребьёвку не попадут:`);
     for (const p of short) {
       const decision = closed.decisions[p.id];
-      const mark = decision === 'admit' ? '✅ допущен' : decision === 'exclude' ? '✖ не допущен' : '⏳ ждёт решения';
+      const mark = decision === 'admit' ? '✅ играет' : decision === 'exclude' ? '✖ не играет' : '⏳ ждёт решения';
       lines.push(`• ${p.name} — ${acceptedCount(session, p.id)} из ${maxSubmissions} · ${mark}`);
       if (!decision) {
         buttons.push([
@@ -738,9 +720,9 @@ function renderOrganizer(session: IntakeSession): OutgoingMessage {
   const mainOk = split.main.length >= MIN_SONGS_PER_QUALIFIER;
   lines.push(
     '',
-    `Пулы разделены (seed ${split.seed}):`,
+    `Песни разделены (seed ${split.seed}):`,
     `${finalOk ? '✅' : '⚠️'} Финал: ${split.final.length} из нужных ~${split.finalTarget}`,
-    `${mainOk ? '✅' : '⚠️'} Отбор: ${split.main.length} ${plural(split.main.length, 'песня', 'песни', 'песен')} на ${qualifierMatches} ${plural(qualifierMatches, 'матч', 'матча', 'матчей')} — на матч нужно ~${MIN_SONGS_PER_QUALIFIER} подходящих, повтор между парами допустим`,
+    `${mainOk ? '✅' : '⚠️'} Отбор: ${split.main.length} ${plural(split.main.length, 'песня', 'песни', 'песен')} на ${qualifierMatches} ${plural(qualifierMatches, 'матч', 'матча', 'матчей')} — на матч нужно ~${MIN_SONGS_PER_QUALIFIER} подходящих, у разных пар песни могут повторяться`,
   );
   if (!finalOk) lines.push(`Финалу не хватает ${split.finalTarget - split.final.length} — нужен запас организатора.`);
   lines.push(
@@ -757,8 +739,8 @@ function renderOrganizer(session: IntakeSession): OutgoingMessage {
   };
 }
 
-function labelOf(s: Submission): string {
-  return s.meta ? `${s.meta.artist} — ${s.meta.title}` : (s.file.fileName ?? 'без имени');
+function labelOf(session: IntakeSession, userId: UserId, s: Submission): string {
+  return s.meta ? `${s.meta.artist} — ${s.meta.title}` : (s.file.fileName ?? tx(session, userId).list.noName);
 }
 
 function statusMark(s: Submission): string {

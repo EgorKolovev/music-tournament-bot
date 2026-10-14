@@ -5,10 +5,11 @@ import type { LibrarySong } from '../bot/matchSession.ts';
 import type { UserId } from '../bot/protocol.ts';
 import { buildQualifierBracket, qualified } from '../domain/bracket/bracket.ts';
 import { acceptedSongs } from '../domain/submission/intake.ts';
-import { DAY_MS, isoDate, message, participant, scope, toast } from './helpers.ts';
+import { DAY_MS, message, moscowDate, participant, scope, stylesOf, textsTo, toast } from './helpers.ts';
 import { ORG, type Step, type TournamentState } from './state.ts';
 
 // Переходы этапов: сбор → жеребьёвка и отбор → финал → архив.
+
 
 export function openDraw(state: TournamentState, at: number): Step {
   const { config } = state;
@@ -17,14 +18,15 @@ export function openDraw(state: TournamentState, at: number): Step {
   }
   const players = admittedPlayers(state.intake);
   if (players.length < config.finalists) {
-    return toast(state, config.organizerId, `Игроков ${players.length}, а финалистов должно быть ${config.finalists}`);
+    return toast(state, config.organizerId, `Игроков ${players.length}, а мест в финале ${config.finalists} — уменьшите число финалистов в настройках`);
   }
   const rounds = buildQualifierBracket(
     players.map((p) => p.id),
     config.finalists,
     config.seed,
   ).rounds.length;
-  const deadlines = Array.from({ length: rounds }, (_, i) => isoDate(at + (i + 1) * config.roundDays * DAY_MS));
+  // Срок круга 0 — турнир без сроков: дат нет ни в сообщениях, ни в напоминаниях.
+  const deadlines = config.roundDays > 0 ? Array.from({ length: rounds }, (_, i) => moscowDate(at + (i + 1) * config.roundDays * DAY_MS)) : [];
   const people = Object.values(state.people);
   const opened = openDrawSession({
     players,
@@ -35,6 +37,7 @@ export function openDraw(state: TournamentState, at: number): Step {
     seed: config.seed,
     deadlines,
     botUsername: config.botUsername,
+    styles: stylesOf(state),
   });
   const next: TournamentState = {
     ...state,
@@ -49,7 +52,10 @@ export function toFinal(state: TournamentState): Step {
   if (state.phase !== 'qualifiers' || !state.draw || !qualifiersDone(state.draw)) {
     return toast(state, state.config.organizerId, 'Отбор ещё не закончен');
   }
-  const out = finalistIds(state).map((id) => message(id, '🏆 Ты в финале! Организатор сообщит дату и место.'));
+  const out = finalistIds(state).map((id) => {
+    const texts = textsTo(state, id).events;
+    return message(id, [texts.finalist, texts.finalistCheer, texts.finalWhen].filter(Boolean).join(' '));
+  });
   return { state: { ...state, phase: 'final', journal: [...state.journal, 'Отбор завершён, финалисты определены'] }, out };
 }
 
@@ -62,6 +68,7 @@ export function openFinal(state: TournamentState): Step {
     finalists: finalistIds(state).map((id) => participant(state, id)),
     judge: state.finalJudge,
     organizer: { id: ORG, name: 'Организатор' },
+    styles: stylesOf(state),
     library: libraryOf(state, split.final),
     ruleset: state.config.finalRuleset,
     seed: state.config.seed + 7,
@@ -75,7 +82,11 @@ export function archive(state: TournamentState): Step {
   if (!champion) return toast(state, state.config.organizerId, 'Финал ещё не сыгран');
   const name = participant(state, champion).name;
   const next: TournamentState = { ...state, phase: 'archive', journal: [...state.journal, `Турнир завершён, победитель ${name}`] };
-  const out = Object.keys(state.people).map((id) => message(id, `🏁 Турнир «${state.config.title}» завершён. Победитель — ${name}! Спасибо за игру.`));
+  const out = Object.keys(state.people).map((id) => {
+    const texts = textsTo(state, id).events;
+    const thanks = id === champion ? texts.championIsYou : texts.thanks;
+    return message(id, [texts.finished({ title: state.config.title, champion: name }), thanks].filter(Boolean).join(' '));
+  });
   return { state: next, out };
 }
 

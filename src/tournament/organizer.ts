@@ -1,7 +1,7 @@
 import { eliminated, matchPlayers } from '../bot/drawSession.ts';
 import type { Outgoing, UserId } from '../bot/protocol.ts';
 import { openMatches } from '../domain/bracket/bracket.ts';
-import { hasLeft, matchTitle, message, participant, say, toast } from './helpers.ts';
+import { hasLeft, matchTitle, message, participant, say, textsTo, toast } from './helpers.ts';
 import { closeWithResult } from './qualifiers.ts';
 import { finalistIds } from './stages.ts';
 import type { AdminMenu, Step, TournamentState } from './state.ts';
@@ -21,7 +21,7 @@ export function technicalResult(state: TournamentState, from: UserId, payload: s
   if (!players || !winner || !players.includes(winner.id) || state.draw.results[matchId]) {
     return say(state, from, 'Не нашёл такой открытый матч с этим игроком.');
   }
-  const awarded = awardTechnical(state, matchId, winner.id, parsed[4]!.trim() || 'без причины');
+  const awarded = awardTechnical(state, matchId, winner.id, parsed[4]!.trim() || 'решение организатора');
   return { state: awarded.state, out: [...awarded.out, message(from, 'Готово.')] };
 }
 
@@ -40,7 +40,7 @@ function awardTechnical(state: TournamentState, matchId: string, winner: UserId,
     note,
   );
   const name = participant(state, winner).name;
-  const notices = people.map((id) => message(id, `Матч ${title} закрыт${byOrganizer ? ' организатором' : ''}: ${note}. Проходит ${name}.`));
+  const notices = people.map((id) => message(id, textsTo(state, id).events.technical({ title, reason, winner: name })));
   return { state: closed.state, out: [...closed.out, ...notices] };
 }
 
@@ -54,10 +54,10 @@ export function withdraw(state: TournamentState, userId: UserId, by: 'organizer'
     withdrawn: [...state.withdrawn, userId],
     left: self ? [...(state.left ?? []), userId] : state.left,
     adminMenu: self ? state.adminMenu : null,
-    journal: [...state.journal, self ? `Вышел из турнира сам: ${name}` : `Организатор снял с турнира: ${name}`],
+    journal: [...state.journal, self ? `Выход из турнира по своему желанию: ${name}` : `Снятие с турнира организатором: ${name}`],
   };
   const forfeits = forfeitWithdrawn(next);
-  const notice = self ? [] : [message(userId, '🚪 Организатор снял тебя с турнира. Спасибо за игру!')];
+  const notice = self ? [] : [message(userId, textsTo(state, userId).events.removed)];
   return { state: forfeits.state, out: [...notice, ...forfeits.out] };
 }
 

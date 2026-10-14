@@ -1,9 +1,9 @@
-import { confirmedJudge, matchPlayers, recordResult } from '../bot/drawSession.ts';
+import { confirmedJudge, matchLabel, matchPlayers, recordResult } from '../bot/drawSession.ts';
 import { handleIncoming, openMatchSession, type MatchSession } from '../bot/matchSession.ts';
 import type { Incoming, Outgoing, UserId } from '../bot/protocol.ts';
 import { playedMatches } from '../domain/bracket/bracket.ts';
 import { hashText } from '../shared/random.ts';
-import { matchTitle, message, participant, scope, scopeMatch, toast } from './helpers.ts';
+import { matchTitle, message, participant, scope, scopeMatch, stylesOf, textsTo, toast } from './helpers.ts';
 import { libraryOf } from './stages.ts';
 import type { MatchRuntime, Step, TournamentState } from './state.ts';
 
@@ -15,12 +15,12 @@ export function syncMatches(state: TournamentState): Step {
   if (state.phase !== 'qualifiers' || !draw?.bracket) return { state, out: [] };
   let next = state;
   const out: Outgoing[] = [];
-  playedMatches(draw.bracket).forEach((match, index) => {
+  playedMatches(draw.bracket).forEach((match) => {
     if (next.matches[match.id] || draw.results[match.id]) return;
     const judge = confirmedJudge(draw, match.id);
     const players = matchPlayers(draw, match.id);
     if (!judge || !players) return;
-    const opened = openMatch(next, match.id, index + 1, players, judge, 0);
+    const opened = openMatch(next, match.id, matchLabel(match).slice(1), players, judge, 0);
     next = opened.state;
     out.push(...opened.out);
   });
@@ -30,7 +30,7 @@ export function syncMatches(state: TournamentState): Step {
 function openMatch(
   state: TournamentState,
   matchId: string,
-  matchNo: number,
+  matchNo: string,
   players: [UserId, UserId],
   judge: UserId,
   attempt: number,
@@ -40,6 +40,7 @@ function openMatch(
     matchNo,
     players: [participant(state, players[0]), participant(state, players[1])],
     judge: participant(state, judge),
+    styles: stylesOf(state),
     library: libraryOf(state, state.intake.closed!.split.main),
     ruleset: state.config.qualifierRuleset,
     seed: state.config.seed + hashText(matchId) * 31 + attempt,
@@ -57,7 +58,7 @@ function openMatch(
 export function matchStep(state: TournamentState, matchId: string, input: Incoming, at: number): Step {
   const runtime = state.matches[matchId];
   const from = input.kind === 'worker' ? '' : input.from;
-  if (!runtime || runtime.closed) return toast(state, from, 'Этот матч уже завершён');
+  if (!runtime || runtime.closed) return toast(state, from, textsTo(state, from).events.matchClosed);
 
   // Знакомство могло пополниться, пока матч шёл: судья этого матча судил чужой и т. п.
   const config = runtime.session.config;
@@ -119,17 +120,18 @@ export function closeWithResult(state: TournamentState, matchId: string, winner:
 
 export function openDispute(state: TournamentState, from: UserId, matchId: string, at: number): Step {
   const runtime = state.matches[matchId];
-  if (!runtime || runtime.closed || runtime.dispute) return toast(state, from, 'Спорить уже не о чем');
+  const texts = textsTo(state, from).events.dispute;
+  if (!runtime || runtime.closed || runtime.dispute) return toast(state, from, texts.nothing);
   const { phase } = runtime.session.match;
   const slot = runtime.session.config.players.findIndex((p) => p.id === from);
-  if (slot === -1) return toast(state, from, 'Это не твой матч');
-  if (phase.kind !== 'decided' || phase.playersConfirmed[slot]) return toast(state, from, 'Результат уже подтверждён');
+  if (slot === -1) return toast(state, from, texts.notYours);
+  if (phase.kind !== 'decided' || phase.playersConfirmed[slot]) return toast(state, from, texts.confirmed);
   const next = {
     ...state,
     matches: { ...state.matches, [matchId]: { ...runtime, dispute: { by: from, at } } },
     journal: [...state.journal, `Спор: ${participant(state, from).name}, матч ${matchTitle(state, matchId)}`],
   };
-  return toast(next, from, 'Спор передан организатору');
+  return toast(next, from, texts.sent);
 }
 
 export function keepResult(state: TournamentState, matchId: string): Step {
@@ -150,7 +152,7 @@ export function replayMatch(state: TournamentState, matchId: string): Step {
   const { config } = runtime.session;
   const closed = { ...state, matches: { ...state.matches, [matchId]: { ...runtime, closed: true } } };
   const notices = [config.judge, ...config.players].map((p) =>
-    message(p.id, `🔁 Организатор назначил переигровку матча №${config.matchNo}. Новая панель — ниже; уже прозвучавшие песни не повторятся.`),
+    message(p.id, textsTo(state, p.id).events.replay({ match: config.matchNo })),
   );
   const reopened = openMatch(closed, matchId, config.matchNo, [config.players[0].id, config.players[1].id], config.judge.id, runtime.attempt + 1);
   return { state: reopened.state, out: [...notices, ...reopened.out] };

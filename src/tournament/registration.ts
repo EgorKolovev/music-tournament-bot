@@ -3,14 +3,12 @@ import { joinIntake } from '../bot/intakeSession.ts';
 import type { Outgoing, OutgoingMessage, UserId } from '../bot/protocol.ts';
 import { formatPoints } from '../domain/match/ruleset.ts';
 import type { Sender } from './events.ts';
-import { canAdmin, message, say, scope, toast } from './helpers.ts';
+import { canAdmin, message, say, scope, textsTo, toast } from './helpers.ts';
 import { resendPanels } from './panels.ts';
 import { finalistIds } from './stages.ts';
 import type { PendingRegistration, Person, Step, TournamentState } from './state.ts';
 
 // Регистрация по ссылкам: участник t_<код>, судья матча judge_<матч>, судья финала fjudge_<код>.
-
-const COMMANDS_HINT = 'Команды: /status — где ты сейчас, /matches — кто с кем играет, /help — что я умею.';
 
 export function handleStart(state: TournamentState, from: Sender, payload: string, at: number): Step {
   const registered = state.people[from.id];
@@ -21,12 +19,14 @@ export function handleStart(state: TournamentState, from: Sender, payload: strin
   if (!registered) {
     if (invite || judgeLink || finalJudgeLink) return startRegistration(state, from, invite ? undefined : payload);
     if (canAdmin(state, from.id)) return resendPanels(state, from.id);
-    return say(state, from.id, 'Это бот музыкального турнира. Чтобы участвовать, открой ссылку-приглашение от организатора.');
+    return say(state, from.id, textsTo(state, from.id).registration.stranger);
   }
   if (judgeLink) return judgeInvite(state, from.id, judgeLink[1]!);
   if (finalJudgeLink) return assignFinalJudge(state, from.id, at);
   const panels = canAdmin(state, from.id) ? resendPanels(state, from.id).out : [];
-  return { state, out: [message(from.id, `Ты в турнире: №${registered.number}, ${registered.name}.\n${COMMANDS_HINT}`), ...panels] };
+  const texts = textsTo(state, from.id).registration;
+  const text = `${texts.already({ number: registered.number, name: registered.name })}\n${texts.commands}`;
+  return { state, out: [message(from.id, text), ...panels] };
 }
 
 function startRegistration(state: TournamentState, from: Sender, payload?: string): Step {
@@ -36,18 +36,16 @@ function startRegistration(state: TournamentState, from: Sender, payload?: strin
 }
 
 function registrationMessage(state: TournamentState, to: UserId, pending: PendingRegistration, bump = false): OutgoingMessage {
+  const texts = textsTo(state, to).registration;
+  const { buttons } = texts;
   if (pending.step === 'name') {
     return {
       kind: 'message',
       to,
       slot: 'r:reg',
       bump,
-      text: [
-        `Привет! Это бот турнира «${state.config.title}».`,
-        '',
-        'Как тебя записать? Это имя увидят соперники и судьи. Пришли его одним сообщением или возьми имя из Telegram.',
-      ].join('\n'),
-      buttons: [[{ label: `👤 ${pending.suggested}`, data: 'r:name' }]],
+      text: [texts.hello({ title: state.config.title }), '', texts.askName].join('\n'),
+      buttons: [[{ label: buttons.profileName({ name: pending.suggested }), data: 'r:name' }]],
     };
   }
   const ruleset = state.config.qualifierRuleset;
@@ -57,28 +55,18 @@ function registrationMessage(state: TournamentState, to: UserId, pending: Pendin
     slot: 'r:reg',
     bump,
     text: [
-      `Имя: ${pending.name}`,
+      texts.name({ name: pending.name! }),
       '',
-      'Правила коротко:',
-      '• Отбор — очные матчи один на один, судья включает трек со своего телефона.',
-      `• Исполнитель — ${formatPoints(ruleset.artistPoints)} балла, название — ${formatPoints(ruleset.titlePoints)}. Свои песни тебе не выпадут.`,
-      '• Результат подтверждают судья и оба игрока; спор решает организатор.',
-      '• Судить можно чужие матчи; песни, которые услышишь как судья, тебе потом не выпадут.',
+      texts.rulesTitle,
+      texts.rules({ artist: formatPoints(ruleset.artistPoints), title: formatPoints(ruleset.titlePoints) }),
       '',
-      'Telegram ID используется только внутри турнира.',
-      ...(canChooseRole(state, pending) ? ['', 'Можно не играть, а только прислать песни: они пойдут в игру, а тебя могут позвать судить.'] : []),
+      texts.privacy,
+      ...(canChooseRole(state, pending) ? ['', texts.songsOnlyOffer] : []),
     ].join('\n'),
     // «Играю» — те же данные, что у прежней «Принимаю правила»: старые события значат то же.
     buttons: canChooseRole(state, pending)
-      ? [
-          [{ label: '🎤 Играю', data: 'r:accept' }],
-          [{ label: '🎁 Только пришлю песни', data: 'r:songs' }],
-          [{ label: '✏️ Другое имя', data: 'r:rename' }],
-        ]
-      : [
-          [{ label: '✅ Принимаю правила', data: 'r:accept' }],
-          [{ label: '✏️ Другое имя', data: 'r:rename' }],
-        ],
+      ? [[{ label: buttons.play, data: 'r:accept' }], [{ label: buttons.songsOnly, data: 'r:songs' }], [{ label: buttons.rename, data: 'r:rename' }]]
+      : [[{ label: buttons.accept, data: 'r:accept' }], [{ label: buttons.rename, data: 'r:rename' }]],
   };
 }
 
@@ -89,7 +77,8 @@ function canChooseRole(state: TournamentState, pending: PendingRegistration): bo
 
 export function registrationButton(state: TournamentState, from: Sender, data: string, at: number): Step {
   const pending = state.registration[from.id];
-  if (!pending) return toast(state, from.id, 'Регистрация уже завершена');
+  const { toast: texts } = textsTo(state, from.id).registration;
+  if (!pending) return toast(state, from.id, texts.done);
   const setPending = (p: PendingRegistration): Step => ({
     state: { ...state, registration: { ...state.registration, [from.id]: p } },
     out: [registrationMessage(state, from.id, p)],
@@ -98,10 +87,10 @@ export function registrationButton(state: TournamentState, from: Sender, data: s
   if (data === 'rename') return setPending({ ...pending, step: 'name' });
   if (data === 'accept' && pending.step === 'rules') return register(state, from, pending, at);
   if (data === 'songs' && pending.step === 'rules') {
-    if (!canChooseRole(state, pending)) return toast(state, from.id, 'Сбор уже закрыт');
+    if (!canChooseRole(state, pending)) return toast(state, from.id, texts.closed);
     return register(state, from, pending, at, true);
   }
-  return toast(state, from.id, 'Сейчас это действие недоступно');
+  return toast(state, from.id, texts.unavailable);
 }
 
 export function registrationText(state: TournamentState, from: Sender, text: string): Step {
@@ -109,7 +98,7 @@ export function registrationText(state: TournamentState, from: Sender, text: str
   const name = text.trim().replace(/\s+/g, ' ');
   if (pending.step !== 'name') return { state, out: [registrationMessage(state, from.id, pending, true)] };
   if (name.length < 2 || name.length > 32 || name.startsWith('/')) {
-    return say(state, from.id, 'Имя должно быть от 2 до 32 символов. Пришли ещё раз.');
+    return say(state, from.id, textsTo(state, from.id).registration.badName);
   }
   const next: PendingRegistration = { ...pending, step: 'rules', name };
   return {
@@ -135,16 +124,15 @@ function register(state: TournamentState, from: Sender, pending: PendingRegistra
     registration,
     journal: [...state.journal, `Регистрация: №${person.number} ${person.name}${songsOnly ? ' (только песни)' : ''}`],
   };
+  const texts = textsTo(next, person.id).registration;
+  const registered = texts.registered({ title: state.config.title, number: person.number, name: person.name });
+  const welcome = texts.welcome({ number: person.number });
   const out: Outgoing[] = [
     {
       kind: 'message',
       to: person.id,
       slot: 'r:reg',
-      text: [
-        `✅ Ты в турнире «${state.config.title}»: №${person.number}, ${person.name}.`,
-        ...(songsOnly ? ['🎁 Присылаешь песни, но не играешь. Передумаешь — кнопка под списком песен, пока идёт сбор.'] : []),
-        COMMANDS_HINT,
-      ].join('\n'),
+      text: [welcome ? `${registered} ${welcome}` : registered, ...(songsOnly ? [texts.songsOnly] : []), texts.commands, texts.styleHint].join('\n'),
     },
   ];
 
@@ -158,7 +146,7 @@ function register(state: TournamentState, from: Sender, pending: PendingRegistra
       next = { ...next, draw: added.session };
       out.push(...scope(next, added.out, 'd:'));
     }
-    if (!pending.payload) out.push(message(person.id, 'Сбор песен уже закрыт, поэтому сыграть не получится, но тебя могут позвать судить матчи.'));
+    if (!pending.payload) out.push(message(person.id, texts.late));
   }
 
   if (pending.payload) {
@@ -170,19 +158,20 @@ function register(state: TournamentState, from: Sender, pending: PendingRegistra
 }
 
 function judgeInvite(state: TournamentState, userId: UserId, matchId: string): Step {
-  if (!state.draw?.bracket) return say(state, userId, 'Это приглашение пока неактуально: жеребьёвки ещё не было.');
+  if (!state.draw?.bracket) return say(state, userId, textsTo(state, userId).registration.noPairs);
   const step = inviteByLink(state.draw, matchId, userId);
   return { state: { ...state, draw: step.session }, out: scope(state, step.out, 'd:') };
 }
 
 function assignFinalJudge(state: TournamentState, userId: UserId, at: number): Step {
-  if (state.phase !== 'final' || state.final) return say(state, userId, 'Назначить судью финала сейчас нельзя.');
-  if (finalistIds(state).includes(userId)) return say(state, userId, 'Финалист не может судить финал.');
+  const texts = textsTo(state, userId).registration;
+  if (state.phase !== 'final' || state.final) return say(state, userId, texts.finalJudgeNotNow);
+  if (finalistIds(state).includes(userId)) return say(state, userId, texts.finalistJudge);
   const person = state.people[userId]!;
   const next = {
     ...state,
     finalJudge: { id: person.id, name: person.name },
     journal: [...state.journal, `Судья финала: ${person.name} (${new Date(at).toISOString().slice(0, 10)})`],
   };
-  return say(next, userId, '⚖️ Ты судья финала. Панель судьи придёт, когда организатор откроет финал.');
+  return say(next, userId, texts.finalJudge);
 }

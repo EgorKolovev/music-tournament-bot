@@ -21,7 +21,7 @@ export interface TournamentConfig {
   botUsername: string;
   finalists: number;
   seed: number;
-  // Срок круга отбора в днях от жеребьёвки.
+  // Срок круга отбора в днях от жеребьёвки; 0 — без сроков.
   roundDays: number;
   intakeRules: IntakeRules;
   // Длина игрового фрагмента, секунд; одна на турнир.
@@ -42,6 +42,8 @@ export interface Person {
   // Номер внутри турнира — по нему организатор указывает игрока в командах.
   number: number;
   registeredAt: number;
+  // Стиль текстов бота (src/texts), выбирается командой /style; нет — основной.
+  style?: string;
 }
 
 export interface PendingRegistration {

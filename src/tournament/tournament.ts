@@ -6,7 +6,7 @@ import { findMatch } from '../domain/bracket/bracket.ts';
 import { isAudienceKey, MAX_BROADCAST_CHARS, sendBroadcast, type AudienceKey } from './broadcast.ts';
 import { handleCommand } from './commands.ts';
 import type { Sender, StampedEvent, TournamentEvent } from './events.ts';
-import { canAdmin, intakeStep, isOrganizer, isParticipant, say, scope, toast } from './helpers.ts';
+import { canAdmin, intakeStep, isOrganizer, isParticipant, say, scope, textsTo, toast } from './helpers.ts';
 import { adminMenuButton, forfeitWithdrawn } from './organizer.ts';
 import { leaveButton } from './leave.ts';
 import { adminPanel, renderExtras, resendPanels, retiredNotices } from './panels.ts';
@@ -15,6 +15,7 @@ import { registrationButton, registrationText } from './registration.ts';
 import { tick } from './reminders.ts';
 import { changeSetting, isSettingKey, renameTournament } from './settings.ts';
 import { archive, openDraw, openFinal, toFinal } from './stages.ts';
+import { styleButton } from './style.ts';
 import { ORG, type PanelScreen, type Step, type TournamentConfig, type TournamentState } from './state.ts';
 
 // Оркестратор турнира (docs/telegram-integration.md, разделы 2, 4, 6): одно состояние на весь
@@ -24,7 +25,7 @@ import { ORG, type PanelScreen, type Step, type TournamentConfig, type Tournamen
 // Маршрутизация: у каждой кнопки и каждого slot префикс контекста — один человек может быть
 // игроком своего матча и судьёй чужого, а организатор — ещё и участником.
 //   r: регистрация · i: сбор · o: организатор и админы · d: жеребьёвка и карточки · m:<матч>: матч
-//   f: финал · x: споры · l: выход из турнира
+//   f: финал · x: споры · l: выход из турнира · s: стиль текстов
 
 export type { Step, TournamentConfig, TournamentState } from './state.ts';
 
@@ -105,7 +106,7 @@ function dispatch(state: TournamentState, event: TournamentEvent, at: number): S
       if (state.phase === 'intake' && isParticipant(state, event.from.id)) {
         return intakeStep(state, { kind: 'files', from: event.from.id, files: event.files });
       }
-      return say(state, event.from.id, 'Сейчас песни не принимаются.');
+      return say(state, event.from.id, textsTo(state, event.from.id).commands.filesClosed);
     case 'worker':
       return intakeStep(state, { kind: 'worker', results: event.results });
     case 'button':
@@ -126,7 +127,7 @@ function handleText(state: TournamentState, from: Sender, text: string, at: numb
     return intakeStep(state, { kind: 'text', from: from.id, text });
   }
   if (!state.people[from.id] && !canAdmin(state, from.id)) {
-    return say(state, from.id, 'Чтобы участвовать, открой ссылку-приглашение от организатора.');
+    return say(state, from.id, textsTo(state, from.id).commands.needInvite);
   }
   void at;
   return { state, out: [] };
@@ -136,18 +137,19 @@ function handleButton(state: TournamentState, from: Sender, data: string, at: nu
   const colon = data.indexOf(':');
   const prefix = colon === -1 ? data : data.slice(0, colon);
   const rest = colon === -1 ? '' : data.slice(colon + 1);
+  const texts = textsTo(state, from.id).commands.toast;
 
   switch (prefix) {
     case 'r':
       return registrationButton(state, from, rest, at);
     case 'i':
-      if (state.phase !== 'intake') return toast(state, from.id, 'Сбор уже закрыт');
+      if (state.phase !== 'intake') return toast(state, from.id, texts.intakeClosed);
       return intakeStep(state, { kind: 'button', from: from.id, data: rest });
     case 'o':
-      if (!canAdmin(state, from.id)) return toast(state, from.id, 'Это действие доступно только организатору и админам');
+      if (!canAdmin(state, from.id)) return toast(state, from.id, texts.adminOnly);
       return adminButton(state, from.id, rest, at);
     case 'd': {
-      if (!state.draw) return toast(state, from.id, 'Жеребьёвки ещё не было');
+      if (!state.draw) return toast(state, from.id, texts.noDraw);
       const step = handleDraw(state.draw, { kind: 'button', from: from.id, data: rest });
       return { state: { ...state, draw: step.session }, out: scope(state, step.out, 'd:') };
     }
@@ -157,19 +159,21 @@ function handleButton(state: TournamentState, from: Sender, data: string, at: nu
       return matchStep(state, matchId, { kind: 'button', from: from.id, data: rest.slice(separator + 1) }, at);
     }
     case 'f': {
-      if (!state.final) return toast(state, from.id, 'Финал ещё не начался');
+      if (!state.final) return toast(state, from.id, texts.finalNotStarted);
       const step = handleFinal(state.final, { kind: 'button', from: from.id, data: rest });
       return { state: { ...state, final: step.session }, out: scope(state, step.out, 'f:') };
     }
     case 'l':
       return leaveButton(state, from.id, rest);
+    case 's':
+      return styleButton(state, from.id, rest);
     case 'x': {
       const dispute = /^dispute:(.+)$/.exec(rest);
       if (dispute) return openDispute(state, from.id, dispute[1]!, at);
-      return toast(state, from.id, 'Кнопка устарела');
+      return toast(state, from.id, texts.stale);
     }
     default:
-      return toast(state, from.id, 'Кнопка устарела');
+      return toast(state, from.id, texts.stale);
   }
 }
 
@@ -205,7 +209,7 @@ function organizerButton(state: TournamentState, actor: UserId, data: string, at
     const step = handleFinal(state.final, input);
     return { state: { ...state, final: step.session }, out: scope(state, step.out, 'f:', 'f:', actor) };
   }
-  return toast(state, organizer, 'Сейчас это действие недоступно');
+  return toast(state, organizer, 'Сейчас эта кнопка не работает');
 }
 
 const SCREENS: readonly PanelScreen[] = ['home', 'intake', 'bracket', 'matches', 'players', 'final', 'settings', 'rename', 'broadcast'];
@@ -221,10 +225,10 @@ function navigate(state: TournamentState, actor: UserId, data: string): Step | u
   const match = /^(?:m|open):(.+)$/.exec(data);
   if (match) {
     const found = state.draw?.bracket && findMatch(state.draw.bracket, match[1]!);
-    return found ? setScreen(state, actor, `match:${match[1]!}`) : toast(state, actor, 'Матч не найден');
+    return found ? setScreen(state, actor, `match:${match[1]!}`) : toast(state, actor, 'Такого матча нет');
   }
   const person = /^p:(.+)$/.exec(data);
-  if (person) return state.people[person[1]!] ? setScreen(state, actor, `player:${person[1]!}`) : toast(state, actor, 'Участник не найден');
+  if (person) return state.people[person[1]!] ? setScreen(state, actor, `player:${person[1]!}`) : toast(state, actor, 'Такого участника нет');
   return undefined;
 }
 

@@ -11,9 +11,11 @@ import {
 import { scoreOf, usedSongIds } from '../domain/match/match.ts';
 import { formatPoints, type Ruleset } from '../domain/match/ruleset.ts';
 import { seededRandom, shuffled } from '../shared/random.ts';
+import { textsOf } from '../texts/index.ts';
 import {
   handleIncoming,
   openMatchSession,
+  render as renderMatch,
   type LibrarySong,
   type MatchSession,
   type Participant,
@@ -36,6 +38,8 @@ export interface FinalSessionConfig {
   library: LibrarySong[];
   ruleset: Ruleset;
   seed: number;
+  // Стиль текстов участника (src/texts); нет — основной.
+  styles?: Record<UserId, string>;
 }
 
 interface CurrentMatch {
@@ -92,7 +96,8 @@ export function handleFinal(session: FinalSession, input: Incoming): FinalStep {
   } else if (session.current) {
     ({ session: next, out } = delegate(session, input));
   } else {
-    return { session, out: [{ kind: 'toast', to: input.from, text: 'Сейчас на сцене никого нет' }] };
+    const text = textsOf(session.config.styles, input.from).final.toast.nobodyOnStage;
+    return { session, out: [{ kind: 'toast', to: input.from, text }] };
   }
 
   const settled = settle(next);
@@ -115,9 +120,10 @@ function handleOrganizer(session: FinalSession, data: string): OrganizerResult {
     const [a, b] = pair.map((id) => person(session, id)) as [Participant, Participant];
     const opened = openMatchSession({
       stage: 'final',
-      matchNo: matchNumber(session, matchId),
+      matchNo: String(matchNumber(session, matchId)),
       players: [a, b],
       judge: session.config.judge,
+      styles: session.config.styles,
       library: session.config.library,
       ruleset: session.config.ruleset,
       seed: session.config.seed,
@@ -144,7 +150,7 @@ function handleOrganizer(session: FinalSession, data: string): OrganizerResult {
   if (paperWinner && session.mode.kind === 'paperWinner') {
     const { matchId } = session.mode;
     const winner = paperWinner[1]!;
-    if (!playersOf(session.bracket, session.results, matchId)?.includes(winner)) return { toast: 'Это не игрок матча' };
+    if (!playersOf(session.bracket, session.results, matchId)?.includes(winner)) return { toast: 'Такого игрока в этом матче нет' };
     const journal = [
       ...session.journal,
       `Результат с бумаги: ${matchTitle(session, matchId)} — победа ${person(session, winner).name} (внёс организатор)`,
@@ -155,7 +161,7 @@ function handleOrganizer(session: FinalSession, data: string): OrganizerResult {
       out: [],
     };
   }
-  return { toast: 'Сейчас это действие недоступно' };
+  return { toast: 'Сейчас эта кнопка не работает' };
 }
 
 function delegate(session: FinalSession, input: Incoming): FinalStep {
@@ -207,6 +213,13 @@ function settle(session: FinalSession): FinalStep {
     };
   }
   return { session, out };
+}
+
+// Сообщения матча на сцене — для перерисовки, когда участник сменил стиль текстов.
+export function renderStage(session: FinalSession): OutgoingMessage[] {
+  if (!session.current) return [];
+  const out = scoped(session.current.matchId, renderMatch(session.current.session)).filter((o) => isVisible(session, o));
+  return out.filter((o): o is OutgoingMessage => o.kind === 'message');
 }
 
 // Сообщения разных матчей у судьи не должны править друг друга: slot получает префикс матча.
@@ -284,7 +297,7 @@ function offlineKit(session: FinalSession): OutgoingMessage[] {
 
 export function renderOrganizer(session: FinalSession): OutgoingMessage {
   const { bracket, results, current } = session;
-  const lines = [`🏆 Финал · ${bracketPath(bracket)}`, `Судья финала: ${session.config.judge.name} (не участник турнира)`, ''];
+  const lines = [`🏆 Финал · ${bracketPath(bracket)}`, `Судья финала: ${session.config.judge.name}`, ''];
   bracket.rounds.forEach((round, r) => {
     lines.push(roundTitle(bracket.rounds.length, r));
     for (const match of round) {

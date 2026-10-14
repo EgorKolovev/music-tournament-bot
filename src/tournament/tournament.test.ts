@@ -5,6 +5,7 @@ import type { UserId } from '../bot/protocol.ts';
 import { openMatches, resolveSlot } from '../domain/bracket/bracket.ts';
 import { acceptedSongs } from '../domain/submission/intake.ts';
 import { formatClock } from '../shared/text.ts';
+import { STYLE_IDS, styleOf, textsFor } from '../texts/index.ts';
 import { ORGANIZER, sender, TestBot, testConfig, violations } from './testBot.ts';
 import type { TournamentState } from './tournament.ts';
 
@@ -308,7 +309,7 @@ describe('Начало фрагмента', () => {
     const judge = appointJudge(bot, matchId);
     playToDecision(bot, `m:${matchId}:`, judge, matchPlayers(bot.state.draw!, matchId)!, 1);
     const audio = bot.outLog.find((o) => o.kind === 'message' && o.to === judge && o.audio);
-    expect(audio).toMatchObject({ text: 'Включите с 0:30', audio: { title: 'Трек 1', fileId: undefined } });
+    expect(audio).toMatchObject({ text: 'Включи с 0:30', audio: { title: 'Трек 1', fileId: undefined } });
     expect(violations(bot.outLog)).toEqual([]);
   });
 });
@@ -348,7 +349,7 @@ describe('Регистрация', () => {
     const bot = readyForQualifiers();
     bot.register(GUEST);
     expect(bot.state.people[GUEST]).toBeDefined();
-    expect(bot.allText(GUEST)).toContain('сыграть не получится');
+    expect(bot.allText(GUEST)).toContain('сыграть не выйдет');
     expect(bot.state.draw!.config.registered.some((p) => p.id === GUEST)).toBe(true);
   });
 });
@@ -405,7 +406,7 @@ describe('Споры и решения организатора', () => {
     // Уведомление о споре прошлой попытки решено, кнопки «Открыть в панели» больше нет.
     expect(bot.allText(ORGANIZER)).toContain('✅ Решено.');
     expect(bot.hasButton(ORGANIZER, `o:open:${matchId}`)).toBe(false);
-    expect(bot.allText(players[1])).toContain('назначена переигровка');
+    expect(bot.allText(players[1])).toContain('будет переигран по решению организатора');
 
     playToDecision(bot, `m:${matchId}:`, judge, players);
     const second = bot.state.matches[matchId]!.session.issued.map((t) => t.songId);
@@ -433,7 +434,7 @@ describe('Споры и решения организатора', () => {
     bot.command(ORGANIZER, `/tech ${label} ${number} неявка соперника`);
     expect(bot.state.draw!.results[matchId]).toBe(b);
     expect(bot.state.draw!.journal.at(-1)).toContain('технический результат: неявка соперника');
-    expect(bot.lastText(b)).toContain('закрыт организатором');
+    expect(bot.lastText(b)).toContain('закрыт без игры (неявка соперника)');
   });
 
   it('/tech не доступна участнику', () => {
@@ -458,7 +459,7 @@ describe('Инструменты организатора', () => {
     bot.press(ORGANIZER, `o:techOk:${matchId}:${b}`);
     expect(bot.state.draw!.results[matchId]).toBe(b);
     expect(bot.state.adminMenu).toBeNull();
-    expect(bot.allText(a)).toContain('технический результат: решение организатора');
+    expect(bot.allText(a)).toContain('закрыт без игры (решение организатора)');
     expect(violations(bot.outLog)).toEqual([]);
   });
 
@@ -507,7 +508,7 @@ describe('Инструменты организатора', () => {
     bot.press(ORGANIZER, `o:withdrawPick:${waiting}`);
     bot.press(ORGANIZER, `o:withdrawOk:${waiting}`);
     expect(bot.state.withdrawn).toEqual([waiting]);
-    expect(bot.lastText(waiting)).toContain('снял тебя с турнира');
+    expect(bot.lastText(waiting)).toContain('Тебя сняли с турнира по решению организатора');
     expect(bot.state.draw!.results[second.id]).toBeUndefined();
 
     // Снятие игрока текущего матча закрывает его в пользу соперника, а следующая пара —
@@ -552,7 +553,7 @@ describe('/status', () => {
     const [a, b] = matchPlayers(draw, first.id)!;
     const name = (id: UserId) => bot.state.people[id]!.name;
 
-    expect(status(bot, a)).toMatch(new RegExp(`🎤 Твой матч №1\\.\\d, соперник — ${name(b)}, до \\d+ \\S+: нужно выбрать судью`));
+    expect(status(bot, a)).toMatch(new RegExp(`🎤 Твой матч №1\\.\\d, соперник — ${name(b)}, сыграть до \\d+ \\S+ включительно\\. Сейчас: нужно выбрать судью`));
     expect(status(bot, waiting)).toContain(`⏳ Твой следующий матч №2.`);
     expect(status(bot, waiting)).toContain(`соперник определится в №1.`);
 
@@ -651,23 +652,62 @@ describe('Напоминания', () => {
       bot.press(judge, `${p}close`);
     }
     bot.send({ kind: 'tick' }, 11 * 60_000);
-    expect(bot.lastText(players[1])).toContain('Подтвердите результат');
+    expect(bot.lastText(players[1])).toContain('Подтверди результат');
     expect(bot.allText(ORGANIZER)).toContain('не подтверждён 10 минут');
     bot.press(ORGANIZER, `o:open:${matchId}`);
     bot.press(ORGANIZER, `o:keep:${matchId}`);
     expect(bot.state.draw!.results[matchId]).toBe(players[0]);
   });
 
-  it('срок круга: напоминание накануне и сообщение организатору после', () => {
+  it('срок круга: утром последнего дня — паре, наутро после — организатору', () => {
     const bot = readyForQualifiers();
     const matchId = nextMatch(bot)!;
-    const [a] = matchPlayers(bot.state.draw!, matchId)!;
-    const deadline = Date.parse(`${bot.state.draw!.deadlines[0]}T21:00:00Z`);
+    const [a, b] = matchPlayers(bot.state.draw!, matchId)!;
+    // Срок «до N октября» включительно: круг заканчивается в полночь по Москве, 21:00 UTC.
+    const end = Date.parse(`${bot.state.draw!.deadlines[0]}T21:00:00Z`);
+    const hour = 3600_000;
 
-    bot.send({ kind: 'tick' }, deadline - 12 * 3600_000 - bot.now);
-    expect(bot.lastText(a)).toContain('последний день');
-    bot.send({ kind: 'tick' }, 13 * 3600_000);
-    expect(bot.lastText(ORGANIZER)).toContain('Срок 1-го круга истёк');
+    bot.send({ kind: 'tick' }, end - 15 * hour - bot.now);
+    expect(bot.allText(a)).not.toContain('последний день');
+    bot.send({ kind: 'tick' }, hour);
+    expect(bot.lastText(a)).toContain('📅 Сегодня последний день для твоего матча');
+    expect(bot.lastText(a)).toContain(`соперник — ${bot.state.people[b]!.name}`);
+
+    bot.send({ kind: 'tick' }, 14 * hour);
+    expect(bot.allText(ORGANIZER)).not.toContain('круг закончился');
+    bot.send({ kind: 'tick' }, 10 * hour);
+    expect(bot.lastText(ORGANIZER)).toContain('⌛ 1-й круг закончился, а эти матчи так и не сыграны');
+  });
+
+  it('срок круга считается по Москве: жеребьёвка в час ночи — уже новый день', () => {
+    const bot = new TestBot(testConfig({ roundDays: 1 }));
+    for (const id of PLAYERS) bot.register(id);
+    for (const id of PLAYERS) bot.submitSongs(id, 10);
+    bot.processAudio();
+    bot.now = Date.parse('2026-10-10T22:30:00Z'); // 11 октября, 01:30 по Москве
+    toDraw(bot);
+    expect(bot.state.draw!.deadlines[0]).toBe('2026-10-12');
+  });
+
+  it('без срока: дат нет ни в карточках, ни в статусе, продлевать нечего, напоминаний нет', () => {
+    const bot = readyForQualifiers(new TestBot(testConfig({ roundDays: 0 })));
+    const matchId = nextMatch(bot)!;
+    const [a] = matchPlayers(bot.state.draw!, matchId)!;
+    expect(bot.state.draw!.deadlines).toEqual([]);
+    expect(bot.allText(a)).toContain('Соперник:');
+    expect(bot.allText(a)).not.toContain('включительно');
+    bot.command(a, '/status');
+    expect(bot.lastText(a)).toMatch(/🎤 Твой матч №\d\.\d, соперник — .+\. Сейчас: нужно выбрать судью/);
+
+    bot.open(ORGANIZER, 'bracket');
+    expect(bot.allText(ORGANIZER)).toContain('1-й круг · ');
+    expect(bot.allText(ORGANIZER)).not.toContain('1-й круг · до');
+    expect(bot.buttons(ORGANIZER).some((data) => data.startsWith('o:shift:'))).toBe(false);
+
+    const before = bot.outLog.length;
+    bot.send({ kind: 'tick' }, 30 * 24 * 3600_000);
+    const texts = bot.outLog.slice(before).flatMap((o) => (o.kind === 'message' ? [o.text] : []));
+    expect(texts.filter((text) => /последний день|круг закончился/.test(text))).toEqual([]);
   });
 });
 
@@ -688,7 +728,7 @@ describe('Панель админа', () => {
     bot.open(ORGANIZER, 'players');
     expect(panelText(bot, ORGANIZER)).toContain('№1 Игрок 1 @user1 · песен: 0 из 10');
     bot.open(ORGANIZER, 'intake');
-    expect(panelText(bot, ORGANIZER)).toContain('Сбор треков');
+    expect(panelText(bot, ORGANIZER)).toContain('Сбор песен');
     expect(bot.hasButton(ORGANIZER, 'o:closeIntake')).toBe(true);
     bot.open(ORGANIZER, 'home');
     expect(bot.hasButton(ORGANIZER, 'o:closeIntake')).toBe(false);
@@ -786,7 +826,7 @@ describe('Панель админа', () => {
 
     const out = bot.press(ORGANIZER, `o:open:${matchId}`);
     expect(out).toContainEqual(expect.objectContaining({ to: ORGANIZER, slot: 'o:phase', bump: true }));
-    expect(bot.lastText(ORGANIZER)).toContain('⚠️ Спор. Оспорил:');
+    expect(bot.lastText(ORGANIZER)).toContain('⚠️ Спор: результат оспаривает');
     expect(bot.hasButton(ORGANIZER, `o:keep:${matchId}`)).toBe(true);
   });
 });
@@ -822,7 +862,7 @@ describe('Только песни, без игры', () => {
     expect(bot.state.draw!.config.players.map((p) => p.id)).not.toContain(GUEST);
     expect(bot.state.draw!.config.registered.some((p) => p.id === GUEST)).toBe(true);
     bot.command(GUEST, '/status');
-    expect(bot.lastText(GUEST)).toContain('🎁 Твои песни в игре, сам ты не играешь.');
+    expect(bot.lastText(GUEST)).toContain('🎁 Твои песни в игре, а в матчах ты не участвуешь.');
     bot.open(ORGANIZER, 'players');
     expect(bot.allText(ORGANIZER)).toContain('№6 Игрок 6 @user6 · 🎁 только песни');
   });
@@ -910,19 +950,19 @@ describe('Выход из турнира (/leave)', () => {
     expect(bot.state.withdrawn).toEqual([a]);
     expect(bot.state.left).toEqual([a]);
     expect(bot.state.draw!.results[matchId]).toBe(b);
-    expect(bot.allText(b)).toContain('закрыт: технический результат: соперник вышел из турнира');
-    expect(bot.allText(a)).toContain('Ты вышел из турнира. Спасибо за игру!');
+    expect(bot.allText(b)).toContain('закрыт без игры (соперник вышел из турнира)');
+    expect(bot.allText(a)).toContain('ты больше не в турнире. Спасибо за игру!');
     // Самому вышедшему про его пары не пишем.
     expect(bot.allText(a)).not.toContain('соперник вышел');
-    expect(bot.lastText(ADMIN)).toContain('вышел из турнира сам');
+    expect(bot.lastText(ADMIN)).toContain('покидает турнир по своему желанию');
     expect(bot.state.draw!.config.registered.some((p) => p.id === a)).toBe(true);
 
     bot.command(a, '/status');
-    expect(bot.lastText(a)).toContain('🚪 Ты вышел из турнира.');
+    expect(bot.lastText(a)).toContain('🚪 Ты больше не в турнире.');
     bot.command(a, '/leave');
     expect(bot.lastText(a)).toContain('Ты уже не в турнире.');
     bot.open(ORGANIZER, 'players');
-    expect(bot.allText(ORGANIZER)).toContain('🚪 вышел сам');
+    expect(bot.allText(ORGANIZER)).toContain('🚪 выход по своему желанию');
   });
 
   it('после перехода к жеребьёвке, но до неё — просто не попадает в сетку', () => {
@@ -941,14 +981,14 @@ describe('Выход из турнира (/leave)', () => {
     bot.press('5', 'l:final:draw');
     expect(bot.allText('5')).not.toContain('ждём жеребьёвку');
     bot.command('5', '/status');
-    expect(bot.lastText('5')).toContain('🚪 Ты вышел из турнира.');
+    expect(bot.lastText('5')).toContain('🚪 Ты больше не в турнире.');
     bot.open(ORGANIZER, 'bracket');
     bot.press(ORGANIZER, 'o:draw');
     expect(bot.state.draw!.config.players.map((p) => p.id)).toEqual(['1', '2', '3', '4']);
     expect(bot.state.left).toEqual(['5']);
     expect(bot.state.draw!.results).toEqual({});
     bot.open(ORGANIZER, 'players');
-    expect(bot.allText(ORGANIZER)).toContain('№5 Игрок 5 @user5 · 🚪 вышел сам');
+    expect(bot.allText(ORGANIZER)).toContain('№5 Игрок 5 @user5 · 🚪 выход по своему желанию');
   });
 
   it('игроков столько же, сколько мест в финале: жеребьёвка проходит, выйти до неё нельзя', () => {
@@ -1057,6 +1097,41 @@ describe('Настройки по ходу турнира', () => {
     expect(violations(bot.outLog)).toEqual([]);
   });
 
+  it('вводное к сбору правится на месте: лимит песен, длина фрагмента, «только песни»', () => {
+    const bot = new TestBot();
+    bot.register('1');
+    const welcome = () => bot.chats['1']!.messages.flatMap((m) => (m.author === 'bot' && m.slot === 'i:welcome' ? [m.text] : []));
+    expect(welcome()).toHaveLength(1);
+    expect(welcome()[0]).toContain('Пришли до 10 песен');
+    expect(welcome()[0]).toContain('фрагмент до 60 секунд');
+
+    bot.open(ORGANIZER, 'settings');
+    bot.press(ORGANIZER, 'o:set:songs');
+    bot.press(ORGANIZER, 'o:set:songs:15');
+    bot.press(ORGANIZER, 'o:set:fragment');
+    bot.press(ORGANIZER, 'o:set:fragment:30');
+    bot.press('1', 'i:role:songs');
+    expect(welcome()).toHaveLength(1);
+    expect(welcome()[0]).toContain('Пришли до 15 песен');
+    expect(welcome()[0]).toContain('фрагмент до 30 секунд');
+    expect(welcome()[0]).toContain('🎁 Ты только присылаешь песни');
+  });
+
+  it('срок круга «без срока» выбирается до жеребьёвки и потом под замком', () => {
+    const bot = new TestBot();
+    bot.open(ORGANIZER, 'settings');
+    bot.press(ORGANIZER, 'o:set:round');
+    expect(panelText(bot, ORGANIZER)).toContain('«Без срока» — дат нет вовсе');
+    bot.press(ORGANIZER, 'o:set:round:0');
+    expect(bot.toasts.at(-1)).toEqual({ to: ORGANIZER, text: '✅ Срок круга: без срока' });
+    expect(bot.state.journal.at(-1)).toBe('Организатор: срок круга 7 дней → без срока');
+
+    readyForQualifiers(bot);
+    expect(bot.state.draw!.deadlines).toEqual([]);
+    bot.open(ORGANIZER, 'settings');
+    expect(panelText(bot, ORGANIZER)).toContain('📅 Срок круга: без срока · 🔒 жеребьёвка уже началась');
+  });
+
   it('замок: сбор закрыт — лимит, фрагмент и пул; жеребьёвка — финалисты и срок; первый матч — треки и очки', () => {
     const bot = readyForQualifiers();
     bot.open(ORGANIZER, 'settings');
@@ -1128,5 +1203,120 @@ describe('Настройки по ходу турнира', () => {
     bot.command('1', '/start t_test');
     bot.press('1', 'r:name');
     expect(bot.lastText('1')).toContain('Исполнитель — 0,9 балла, название — 1,2.');
+  });
+});
+
+describe('Стиль текстов (/style)', () => {
+  const slotText = (bot: TestBot, id: UserId, slot: string) => {
+    const message = bot.chats[id]?.messages.find((m) => m.author === 'bot' && m.slot === slot);
+    return message?.author === 'bot' ? message.text : '';
+  };
+
+  it('участник выбирает стиль; его список песен перерисовывается, у остальных всё как было', () => {
+    const bot = new TestBot();
+    bot.register('1');
+    bot.register('2');
+    bot.submitSongs('1', 3);
+    bot.processAudio();
+    const otherList = slotText(bot, '2', 'i:list');
+
+    bot.command('1', '/style');
+    expect(bot.hasButton('1', 's:set:rude')).toBe(true);
+    bot.press('1', 's:set:rude');
+    bot.press('1', 's:ok:rude');
+    expect(bot.state.people['1']!.style).toBe('rude');
+    expect(bot.state.intake.config.styles).toEqual({ '1': 'rude' });
+    expect(slotText(bot, '1', 's:style')).toContain(textsFor('rude', '1').commands.style.chosen({ name: '🤬 Ругательный' }));
+    expect(bot.hasButton('1', 's:set:base')).toBe(true);
+    expect(slotText(bot, '1', 'i:list')).toContain(textsFor('rude', '1').intake.list.progress({ accepted: 3, max: 10 }));
+    expect(slotText(bot, '2', 'i:list')).toBe(otherList);
+
+    bot.press('1', 's:set:rude');
+    expect(bot.toasts.at(-1)).toEqual({ to: '1', text: textsFor('rude', '1').commands.style.same });
+    expect(violations(bot.outLog)).toEqual([]);
+  });
+
+  it('по умолчанию — обычный стиль; ругательный включается только после предупреждения, обратно — сразу', () => {
+    const bot = new TestBot();
+    bot.register('1');
+    expect(bot.state.people['1']!.style).toBeUndefined();
+    bot.command('1', '/style');
+    const texts = textsFor(undefined, '1').commands.style;
+    expect(slotText(bot, '1', 's:style')).toContain(texts.current({ name: '🙂 Обычный' }));
+
+    bot.press('1', 's:set:rude');
+    expect(bot.state.people['1']!.style).toBeUndefined();
+    expect(slotText(bot, '1', 's:style')).toContain(styleOf('rude').warning!);
+    expect(bot.hasButton('1', 's:ok:rude')).toBe(true);
+    bot.press('1', 's:back');
+    expect(bot.state.people['1']!.style).toBeUndefined();
+    expect(bot.hasButton('1', 's:set:rude')).toBe(true);
+
+    bot.press('1', 's:set:rude');
+    bot.press('1', 's:ok:rude');
+    expect(bot.state.people['1']!.style).toBe('rude');
+    bot.press('1', 's:set:base');
+    expect(bot.state.people['1']!.style).toBe('base');
+    expect(violations(bot.outLog)).toEqual([]);
+  });
+
+  // Каждый стиль проходит турнир от регистрации до архива: все участники в нём, команды и выход тоже.
+  it.each(STYLE_IDS)('турнир целиком в стиле %s: без нарушений лимитов Telegram и без undefined', (style) => {
+    const bot = new TestBot();
+    const choose = (id: UserId) => {
+      bot.command(id, '/style');
+      if (style === 'base') return;
+      bot.press(id, `s:set:${style}`);
+      if (styleOf(style).warning) bot.press(id, `s:ok:${style}`);
+    };
+    for (const id of PLAYERS) bot.register(id);
+    for (const id of PLAYERS) choose(id);
+    for (const id of PLAYERS) bot.submitSongs(id, 10);
+    bot.processAudio();
+    for (const command of ['/status', '/matches', '/help', '/nope', '/leave']) bot.command('1', command);
+    bot.press('1', 'l:cancel');
+    toDraw(bot);
+    bot.command('1', '/status');
+    let guard = 0;
+    for (let id = nextMatch(bot); id; id = nextMatch(bot)) {
+      playQualifier(bot, id);
+      if (++guard > 10) throw new Error('отбор не сходится');
+    }
+    bot.press(ORGANIZER, 'o:toFinal');
+    bot.register(FINAL_JUDGE, 'fjudge_test');
+    choose(FINAL_JUDGE);
+    bot.press(ORGANIZER, 'o:openFinal');
+    bot.open(ORGANIZER, 'final');
+    bot.press(ORGANIZER, 'o:start:f1-1');
+    const finalists = bot.state.final!.config.finalists.map((p) => p.id) as [UserId, UserId];
+    playToDecision(bot, 'f:', FINAL_JUDGE, finalists, 4);
+    confirmAll(bot, 'f:', FINAL_JUDGE, finalists);
+    bot.open(ORGANIZER, 'home');
+    bot.press(ORGANIZER, 'o:archive');
+    expect(bot.state.phase).toBe('archive');
+
+    const texts = bot.outLog.flatMap((o) => (o.kind === 'message' ? [o.text, ...(o.buttons ?? []).flat().map((b) => b.label)] : [o.text]));
+    expect(texts.filter((text) => /undefined|\[object|NaN/.test(text))).toEqual([]);
+    expect(violations(bot.outLog)).toEqual([]);
+    if (style !== 'base') expect(bot.allText('1')).toContain(textsFor(style, '1').commands.style.chosen({ name: styleOf(style).name }));
+  });
+
+  it('стиль доходит до пар и матчей; до регистрации стиль не выбрать', () => {
+    const bot = new TestBot();
+    bot.command('99', '/style');
+    expect(bot.lastText('99')).toBe(textsFor(undefined, '99').commands.style.stranger);
+
+    readyForQualifiers(bot);
+    bot.command('1', '/style');
+    bot.press('1', 's:set:rude');
+    bot.press('1', 's:ok:rude');
+    expect(bot.state.draw!.config.styles).toEqual({ '1': 'rude' });
+    let guard = 0;
+    for (let id = nextMatch(bot); id; id = nextMatch(bot)) {
+      playQualifier(bot, id);
+      expect(bot.state.matches[id]!.session.config.styles).toEqual({ '1': 'rude' });
+      if (++guard > 10) throw new Error('отбор не сходится');
+    }
+    expect(violations(bot.outLog)).toEqual([]);
   });
 });

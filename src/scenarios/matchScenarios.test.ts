@@ -54,7 +54,7 @@ describe('защита от устаревших кнопок', () => {
     // Двойной клик: ровно та же callback_data приходит второй раз.
     const repeated = nextFrame(engine, frame, frame.input!);
     expect(repeated.session.match.version).toBe(frame.session.match.version);
-    expect(repeated.out).toEqual([{ kind: 'toast', to: DEMO_USERS.judge.id, text: 'Панель устарела — показываю актуальную' }]);
+    expect(repeated.out).toEqual([{ kind: 'toast', to: DEMO_USERS.judge.id, text: 'Эта панель устарела — вот свежая' }]);
   });
 
   it('игрок не может нажать судейскую кнопку', () => {

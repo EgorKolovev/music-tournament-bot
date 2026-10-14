@@ -67,7 +67,8 @@ export function readSettings(env: Record<string, string | undefined>): BotSettin
         .filter((id) => /^\d+$/.test(id)),
       finalists,
       seed: int(env.SEED, Math.floor(Math.random() * 1_000_000)),
-      roundDays: int(env.ROUND_DAYS, 7),
+      // По умолчанию без сроков: даты турнира не решены, он может пройти за пару дней.
+      roundDays: int(env.ROUND_DAYS, 0),
       intakeRules: { ...DEFAULT_INTAKE_RULES, maxSubmissions: int(env.MAX_SUBMISSIONS, DEFAULT_INTAKE_RULES.maxSubmissions) },
       fragmentSec,
       finalPoolTarget: int(env.FINAL_POOL_TARGET, finalPoolSize(DEFAULT_FINAL_TARGET)),

@@ -4,7 +4,7 @@ import type { Button, Outgoing, OutgoingMessage, UserId, WorkerResult } from '..
 import type { Submission } from '../domain/submission/intake.ts';
 import { plural } from '../shared/text.ts';
 import type { Sender, StampedEvent, TournamentEvent } from './events.ts';
-import { canAdmin, isoDate, isOrganizer, panelHolders } from './helpers.ts';
+import { canAdmin, isoDate, isOrganizer, MSK_OFFSET_MS, panelHolders, textsTo } from './helpers.ts';
 import { adminPanel, PANEL_SLOT, screenOf } from './panels.ts';
 import { SETTING_KEYS, settingLine, settingSummary } from './settings.ts';
 import type { Phase, TournamentConfig, TournamentState } from './state.ts';
@@ -66,8 +66,6 @@ interface Routed extends BotStep {
 
 const SCOPED = /^(\d+)~(.*)$/s;
 const LOBBY = 't:';
-// Москва — UTC+3 круглый год; по ней же считаются сроки кругов.
-const MSK_OFFSET_MS = 3 * 3_600_000;
 const COPY_HOUR = 12;
 const PHASE_NAME: Record<Phase, string> = { intake: 'сбор', qualifiers: 'отбор', final: 'финал', archive: 'завершён' };
 
@@ -137,7 +135,7 @@ function route(bot: BotState, event: TournamentEvent, at: number): Routed {
 function routeButton(bot: BotState, from: Sender, data: string, at: number): Routed {
   if (data.startsWith(LOBBY)) return lobbyButton(bot, from.id, data.slice(LOBBY.length), at);
   const { number, rest } = unscope(data);
-  if (number !== bot.active) return toast(bot, from.id, inactiveText(bot, number) ?? 'Кнопка устарела');
+  if (number !== bot.active) return toast(bot, from.id, inactiveText(bot, number, from.id) ?? 'Кнопка устарела');
   const routed = inActive(bot, { kind: 'button', from, data: rest }, at);
   // Нажатие в панели турнира — организатор вернулся к нему из списка турниров.
   if (bot.lobby && rest.startsWith('o:') && isOrganizer(activeTournament(bot), from.id)) {
@@ -154,7 +152,7 @@ function routeCommand(bot: BotState, event: Extract<TournamentEvent, { kind: 'co
   if (command === 'start') {
     const code = /^(?:t|fjudge)_(.+)$/.exec(payload)?.[1];
     const owner = code === undefined ? undefined : bot.tournaments.findIndex((t) => t.state.config.code === code) + 1;
-    if (owner && owner !== bot.active) return say(bot, from.id, inactiveText(bot, owner)!);
+    if (owner && owner !== bot.active) return say(bot, from.id, inactiveText(bot, owner, from.id)!);
     if (owner === bot.active) return inActive(bot, event, at);
   }
   return pausedNotice(bot, from.id) ?? inActive(bot, event, at);
@@ -203,7 +201,7 @@ function pausedNotice(bot: BotState, id: UserId): Routed | undefined {
   const active = activeTournament(bot);
   if (knows(active, id) || canAdmin(active, id)) return undefined;
   for (let number = bot.tournaments.length; number >= 1; number--) {
-    if (number !== bot.active && knows(bot.tournaments[number - 1]!.state, id)) return say(bot, id, inactiveText(bot, number)!);
+    if (number !== bot.active && knows(bot.tournaments[number - 1]!.state, id)) return say(bot, id, inactiveText(bot, number, id)!);
   }
   return undefined;
 }
@@ -212,12 +210,12 @@ function knows(state: TournamentState, id: UserId): boolean {
   return Boolean(state.people[id] || state.registration[id]);
 }
 
-function inactiveText(bot: BotState, number: number): string | undefined {
+function inactiveText(bot: BotState, number: number, to: UserId): string | undefined {
   const entry = bot.tournaments[number - 1];
   if (!entry) return undefined;
   const { title } = entry.state.config;
-  if (entry.state.phase === 'archive') return `🏁 Турнир «${title}» завершён.`;
-  return `⏸ Турнир «${title}» сейчас на паузе. Организатор напишет, когда продолжим.`;
+  const texts = textsTo(entry.state, to).commands;
+  return entry.state.phase === 'archive' ? texts.over({ title }) : texts.paused({ title });
 }
 
 // --- Префиксы ---------------------------------------------------------------------------
@@ -293,11 +291,15 @@ function lobbyScreen(bot: BotState): { text: string; buttons: Button[][] } {
   const confirm = /^switch:(\d+)$/.exec(screen);
   if (confirm) {
     const number = Number(confirm[1]);
+    // Без сроков кругов и предупреждать о них незачем.
+    const timed = activeTournament(bot).config.roundDays > 0;
     const text = [
       `Перейти в «${bot.tournaments[number - 1]!.state.config.title}»?`,
       '',
-      `«${current}» встанет на паузу: его кнопки и ссылки перестанут работать, напоминаний о сроках не будет. ` +
-        'Сами сроки кругов не останавливаются — после возвращения их можно сдвинуть в «Сетке».',
+      timed
+        ? `«${current}» встанет на паузу: его кнопки и ссылки перестанут работать, напоминаний о сроках не будет. ` +
+          'Сами сроки кругов не останавливаются — после возвращения их можно сдвинуть в «Сетке».'
+        : `«${current}» встанет на паузу: его кнопки и ссылки перестанут работать.`,
       'Вернуться можно в любой момент — здесь же, в «🗂 Все турниры».',
     ];
     const buttons = [
