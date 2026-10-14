@@ -5,6 +5,7 @@ import { formatPoints } from '../domain/match/ruleset.ts';
 import type { Sender } from './events.ts';
 import { canAdmin, message, say, scope, textsTo, toast } from './helpers.ts';
 import { resendPanels } from './panels.ts';
+import { restoreChat } from './shown.ts';
 import { finalistIds } from './stages.ts';
 import type { PendingRegistration, Person, Step, TournamentState } from './state.ts';
 
@@ -23,10 +24,12 @@ export function handleStart(state: TournamentState, from: Sender, payload: strin
   }
   if (judgeLink) return judgeInvite(state, from.id, judgeLink[1]!);
   if (finalJudgeLink) return assignFinalJudge(state, from.id, at);
+  // Повторный «Старт» — чаще всего после удалённой переписки: вводное, список песен, карточка пары
+  // и панели матча приходят заново, внизу чата.
   const panels = canAdmin(state, from.id) ? resendPanels(state, from.id).out : [];
   const texts = textsTo(state, from.id).registration;
   const text = `${texts.already({ number: registered.number, name: registered.name })}\n${texts.commands}`;
-  return { state, out: [message(from.id, text), ...panels] };
+  return { state, out: [message(from.id, text), ...restoreChat(state, from.id), ...panels] };
 }
 
 function startRegistration(state: TournamentState, from: Sender, payload?: string): Step {

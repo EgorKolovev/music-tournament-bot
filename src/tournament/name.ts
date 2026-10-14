@@ -4,7 +4,7 @@ import type { TournamentEvent } from './events.ts';
 import { say, textsTo } from './helpers.ts';
 import { cleanName } from './registration.ts';
 import type { Step, TournamentState } from './state.ts';
-import { redrawShown } from './style.ts';
+import { redrawShown } from './shown.ts';
 
 // Смена имени участником (/name): «/name Аня К.» — сразу, «/name» — бот ждёт имя следующим сообщением.
 // Новое имя видно везде, где имя показывают: показанные карточки пар, панели матча, список песен и

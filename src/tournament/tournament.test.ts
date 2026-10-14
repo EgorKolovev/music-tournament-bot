@@ -1414,3 +1414,50 @@ describe('Смена имени (/name)', () => {
     expect(bot.lastText('99')).toBe(texts.stranger);
   });
 });
+
+describe('Удалённая переписка и повторный «Старт»', () => {
+  const slots = (bot: TestBot, id: UserId) => bot.chats[id]!.messages.flatMap((m) => (m.author === 'bot' && m.slot ? [m.slot] : []));
+  const wipe = (bot: TestBot, id: UserId) => {
+    bot.chats[id] = { messages: [], toasts: [] };
+  };
+
+  it('на сборе: вводное и список песен приходят заново, под «Ты в турнире»', () => {
+    const bot = new TestBot();
+    bot.register('1');
+    bot.submitSongs('1', 3);
+    bot.processAudio();
+    wipe(bot, '1');
+
+    bot.command('1', '/start');
+    const messages = bot.chats['1']!.messages.filter((m) => m.author === 'bot');
+    expect(messages[0]!.text).toContain(textsFor(undefined, '1').registration.already({ number: 1, name: 'Игрок 1' }));
+    expect(slots(bot, '1')).toEqual(['i:welcome', 'i:list']);
+    expect(bot.hasButton('1', 'i:pick:edit')).toBe(true);
+
+    // Без удаления «Старт» не плодит копии: сообщения переезжают вниз.
+    bot.command('1', '/start');
+    expect(slots(bot, '1')).toEqual(['i:welcome', 'i:list']);
+    expect(violations(bot.outLog)).toEqual([]);
+  });
+
+  it('на отборе: карточка пары и панель матча — заново; вводное к закрытому сбору — нет', () => {
+    const bot = readyForQualifiers();
+    const matchId = nextMatch(bot)!;
+    const [a, b] = matchPlayers(bot.state.draw!, matchId)!;
+    const judge = appointJudge(bot, matchId);
+    wipe(bot, a);
+    wipe(bot, judge);
+
+    bot.command(a, '/start');
+    bot.command(judge, '/start');
+    expect(slots(bot, a)).not.toContain('i:welcome');
+    expect(slots(bot, a)).toEqual(expect.arrayContaining(['i:list', 'd:card']));
+    expect(bot.hasButton(a, `m:${matchId}:ready`)).toBe(true);
+    expect(bot.hasButton(judge, `m:${matchId}:ready`)).toBe(true);
+
+    playToDecision(bot, `m:${matchId}:`, judge, [a, b]);
+    confirmAll(bot, `m:${matchId}:`, judge, [a, b]);
+    expect(bot.state.matches[matchId]!.closed).toBe(true);
+    expect(violations(bot.outLog)).toEqual([]);
+  });
+});

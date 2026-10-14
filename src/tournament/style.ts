@@ -1,10 +1,7 @@
-import { render as renderDraw } from '../bot/drawSession.ts';
-import { renderStage } from '../bot/finalSession.ts';
-import { render as renderIntake } from '../bot/intakeSession.ts';
-import { render as renderMatch } from '../bot/matchSession.ts';
-import type { Button, Outgoing, OutgoingMessage, UserId } from '../bot/protocol.ts';
+import type { Button, OutgoingMessage, UserId } from '../bot/protocol.ts';
 import { STYLE_IDS, styleId, styleOf } from '../texts/index.ts';
-import { say, scope, scopeMatch, stylesOf, textsTo, toast } from './helpers.ts';
+import { say, stylesOf, textsTo, toast } from './helpers.ts';
+import { redrawShown } from './shown.ts';
 import type { Step, TournamentState } from './state.ts';
 
 // Стиль текстов бота (src/texts): участник выбирает его командой /style. Стиль меняет только то,
@@ -84,23 +81,4 @@ function withStyles(state: TournamentState): TournamentState {
     matches,
     final,
   };
-}
-
-// Уже показанные карточки, списки и панели матча правятся на месте — только те, что изменились.
-// Так же — после смены имени (name.ts).
-export function redrawShown(before: TournamentState, after: TournamentState): Outgoing[] {
-  const out: Outgoing[] = [...scope(after, changed(renderIntake(before.intake), renderIntake(after.intake)), 'i:')];
-  if (before.draw && after.draw) out.push(...scope(after, changed(renderDraw(before.draw), renderDraw(after.draw)), 'd:'));
-  for (const [matchId, runtime] of Object.entries(after.matches)) {
-    const old = before.matches[matchId];
-    if (!old || runtime.closed) continue;
-    out.push(...scopeMatch(after, matchId, runtime.attempt, changed(renderMatch(old.session), renderMatch(runtime.session))));
-  }
-  if (before.final && after.final) out.push(...scope(after, changed(renderStage(before.final), renderStage(after.final)), 'f:'));
-  return out;
-}
-
-function changed(before: OutgoingMessage[], after: OutgoingMessage[]): OutgoingMessage[] {
-  const previous = new Map(before.map((m) => [`${m.to}/${m.slot}`, JSON.stringify(m)]));
-  return after.filter((m) => previous.get(`${m.to}/${m.slot}`) !== JSON.stringify(m));
 }
