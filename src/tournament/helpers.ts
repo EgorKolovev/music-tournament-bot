@@ -57,7 +57,7 @@ export function toast(state: TournamentState, to: UserId, text: string): Step {
 
 // Тексты для человека — в его стиле (src/texts); незарегистрированному — основной.
 export function textsTo(state: TournamentState, id: UserId): Texts {
-  return textsFor(state.people[id]?.style);
+  return textsFor(state.people[id]?.style, id);
 }
 
 // Стили участников для сессий: только выбранные, остальным — основной.

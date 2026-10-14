@@ -320,15 +320,17 @@ function awardsLine(session: MatchSession, awards: { artist: PlayerSlot | null; 
   return judgeTexts(session).awards({ artist: name(awards.artist), title: name(awards.title) });
 }
 
-function pastTrackText(session: MatchSession, index: number): string {
+// progress — строки хода матча («Сыграно 2 из 3») для текущей панели: они идут до слова
+// о неугаданном треке, чтобы оно (а в стиле «Диско» — голос) стояло в конце.
+function pastTrackText(session: MatchSession, index: number, progress: string[] = []): string {
   const track = session.issued[index]!;
   const texts = judgeTexts(session);
   const cancelled = session.match.cancelledTracks.find((t) => t.songId === track.songId);
-  if (cancelled) return texts.cancelled({ n: track.number });
+  if (cancelled) return [texts.cancelled({ n: track.number }), ...progress].join('\n');
   const closedIndex = session.match.closedTracks.findIndex((t) => t.songId === track.songId);
   const closed = session.match.closedTracks[closedIndex]!;
   const scoreAfter = scoreOf(session.match.closedTracks.slice(0, closedIndex + 1), session.config.ruleset);
-  const lines = [texts.closed({ n: track.number }), awardsLine(session, closed.awards), scoreLine(session, scoreAfter)];
+  const lines = [texts.closed({ n: track.number }), awardsLine(session, closed.awards), scoreLine(session, scoreAfter), ...progress];
   const nobody = closed.awards.artist === null && closed.awards.title === null && texts.nobody({ n: track.number });
   if (nobody) lines.push(nobody);
   return lines.join('\n');
@@ -352,14 +354,13 @@ function currentPanelText(session: MatchSession): string {
       lines.push('', texts.startHint);
     }
   } else {
-    lines.push(pastTrackText(session, session.issued.length - 1));
     const played = match.closedTracks.length;
     const regular = regularTracks(config.ruleset.format);
-    if (phase.kind === 'between_tracks') {
-      lines.push(
-        played < regular ? texts.played({ played, of: regular }) : texts.extra({ n: played - regular + 1 }),
-      );
-    }
+    const progress =
+      phase.kind === 'between_tracks'
+        ? [played < regular ? texts.played({ played, of: regular }) : texts.extra({ n: played - regular + 1 })]
+        : [];
+    lines.push(pastTrackText(session, session.issued.length - 1, progress));
     lines.push(...outcomeLines(session));
   }
   if (match.paused) lines.push('', texts.paused);

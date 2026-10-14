@@ -567,7 +567,8 @@ function renderList(session: IntakeSession, userId: UserId): OutgoingMessage {
     }
   }
   if (mode.kind === 'pick') footer.push(texts.pick[mode.action]);
-  if (footer.length > 0) lines.push('', ...footer);
+  // Уведомление и вопрос — отдельными абзацами: у каждого в стиле может быть свой голос в конце.
+  for (const part of footer) lines.push('', part);
 
   return {
     kind: 'message',

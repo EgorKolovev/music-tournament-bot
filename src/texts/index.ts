@@ -1,5 +1,6 @@
 import { hashText } from '../shared/random.ts';
 import { base } from './base/index.ts';
+import { disco } from './disco/index.ts';
 import { rude } from './rude/index.ts';
 import type { Variants } from './variants.ts';
 
@@ -53,6 +54,7 @@ export const BASE_STYLE = 'base';
 
 const STYLES: Record<string, Style> = {
   [BASE_STYLE]: { name: '🙂 Обычный', sample: 'Поздравляю с победой!', texts: {} },
+  disco,
   rude,
 };
 
