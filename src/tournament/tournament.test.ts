@@ -354,6 +354,19 @@ describe('Регистрация', () => {
     expect(bot.allText(GUEST)).toContain('сыграть не выйдет');
     expect(bot.state.draw!.config.registered.some((p) => p.id === GUEST)).toBe(true);
   });
+
+  it('правила называют число треков и отрыв в отборе — из настроек', () => {
+    const bot = new TestBot();
+    bot.command('1', '/start t_test');
+    bot.press('1', 'r:name');
+    expect(bot.lastText('1')).toContain('• В матче отбора 5 треков. Если отрыв меньше 2,0 балла — ещё по треку, пока кто-то не оторвётся на 2,0.');
+    // «Любой» отрыв — прежнее правило: дополнительные треки только при ничьей.
+    bot.open(ORGANIZER, 'settings');
+    for (const action of ['o:set:lead', 'o:set:lead:0', 'o:set:tracks', 'o:set:tracks:3']) bot.press(ORGANIZER, action);
+    bot.command('2', '/start t_test');
+    bot.press('2', 'r:name');
+    expect(bot.lastText('2')).toContain('• В матче отбора 3 трека; при ничьей — ещё по треку, пока кто-то не вырвется вперёд.');
+  });
 });
 
 describe('Судья по ссылке', () => {

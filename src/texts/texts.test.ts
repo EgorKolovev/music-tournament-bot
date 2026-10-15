@@ -61,6 +61,7 @@ describe('тексты бота', () => {
     const base = textsFor('base', '1');
     expect(base.match.judge.fixed({ tracks: 3 })).toMatch(/^3 трека,/);
     expect(base.match.judge.limit({ tracks: 21 })).toMatch(/^Не больше 21 трека;/);
+    expect(base.registration.matchRuleLead({ tracks: 3, lead: '2,0' })).toMatch(/^• В матче отбора 3 трека\./);
     expect(base.intake.list.full({ max: 3 })).toBe('✅ Все 3 песни приняты');
     expect(base.intake.notice.received({ count: 1, rejected: 1 })).toBe('Получил 1 файл — он не подошёл.');
     expect(base.intake.notice.received({ count: 3, rejected: 1 })).toBe('Получил 3 файла, не подошло: 1.');

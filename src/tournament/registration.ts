@@ -1,7 +1,7 @@
 import { inviteByLink, registerPerson } from '../bot/drawSession.ts';
 import { joinIntake } from '../bot/intakeSession.ts';
 import type { Outgoing, OutgoingMessage, UserId } from '../bot/protocol.ts';
-import { formatPoints } from '../domain/match/ruleset.ts';
+import { formatPoints, minLeadOf, regularTracks } from '../domain/match/ruleset.ts';
 import type { Sender } from './events.ts';
 import { canAdmin, message, say, scope, textsTo, toast } from './helpers.ts';
 import { resendPanels } from './panels.ts';
@@ -52,6 +52,8 @@ function registrationMessage(state: TournamentState, to: UserId, pending: Pendin
     };
   }
   const ruleset = state.config.qualifierRuleset;
+  const tracks = regularTracks(ruleset.format);
+  const lead = minLeadOf(ruleset.format);
   return {
     kind: 'message',
     to,
@@ -62,6 +64,7 @@ function registrationMessage(state: TournamentState, to: UserId, pending: Pendin
       '',
       texts.rulesTitle,
       texts.rules({ artist: formatPoints(ruleset.artistPoints), title: formatPoints(ruleset.titlePoints) }),
+      lead > 0 ? texts.matchRuleLead({ tracks, lead: formatPoints(lead) }) : texts.matchRule({ tracks }),
       '',
       texts.privacy,
       ...(canChooseRole(state, pending) ? ['', texts.songsOnlyOffer] : []),
