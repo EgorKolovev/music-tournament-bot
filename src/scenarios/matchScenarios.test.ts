@@ -101,6 +101,14 @@ describe('отрыв после основной части — панель с�
     expect(texts.join('\n')).not.toContain('Отрыв');
   });
 
+  it('отрыв 3,0 — в строках судьи 3,0', () => {
+    const steps = [...everyoneReady, ...track('aw:a:0', 'aw:t:1'), ...track('aw:a:1', 'aw:t:0'), ...repeat(3, track())];
+    const ruleset: Ruleset = { ...QUALIFIER_RULESET, format: { kind: 'fixed', tracks: 5, minLead: 30 } };
+    const texts = judgeTexts(runScenario(matchEngine(demoConfig({ ruleset })), { ...tie, steps }));
+    expect(texts).toContainEqual(expect.stringContaining('При отрыве меньше 3,0 — ещё по треку, пока кто-то не оторвётся на 3,0'));
+    expect(texts).toContainEqual(expect.stringContaining('Аня 2,5 : 2,5 Борис\nОтрыв меньше 3,0 — дополнительный трек 1'));
+  });
+
   it('запас песен: к основной части +10 при отрыве, +5 без него; судья видит предупреждение', () => {
     expect(minSongsForMatch(QUALIFIER_RULESET)).toBe(15);
     expect(minSongsForMatch(LEGACY)).toBe(10);

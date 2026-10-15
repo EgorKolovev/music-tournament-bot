@@ -62,6 +62,10 @@ describe('тексты бота', () => {
     expect(base.match.judge.fixed({ tracks: 3 })).toMatch(/^3 трека,/);
     expect(base.match.judge.limit({ tracks: 21 })).toMatch(/^Не больше 21 трека;/);
     expect(base.registration.matchRuleLead({ tracks: 3, lead: '2,0' })).toMatch(/^• В матче отбора 3 трека\./);
+    // Ругательный стиль переопределяет строки про ничью, поэтому у него свои строки и про отрыв.
+    const rudeJudge = textsFor('rude', '1').match.judge;
+    expect(rudeJudge.fixedLead({ lead: '2,0' })).toBe('Отрыв меньше 2,0 — гоняем ещё по треку, пока кто-то не оторвётся на 2,0');
+    expect(rudeJudge.extraLead({ n: 1, lead: '2,0' })).toBe('Отрыв меньше 2,0, бля — дополнительный трек 1');
     expect(base.intake.list.full({ max: 3 })).toBe('✅ Все 3 песни приняты');
     expect(base.intake.notice.received({ count: 1, rejected: 1 })).toBe('Получил 1 файл — он не подошёл.');
     expect(base.intake.notice.received({ count: 3, rejected: 1 })).toBe('Получил 3 файла, не подошло: 1.');

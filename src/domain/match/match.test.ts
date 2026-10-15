@@ -16,7 +16,7 @@ import { FINAL_RULESET, minLeadOf, QUALIFIER_RULESET, type MatchFormat, type Rul
 const LEGACY_POINTS = { artistPoints: 9, titlePoints: 12 };
 const FINAL: Ruleset = { ...FINAL_RULESET, ...LEGACY_POINTS };
 const QUALIFIER: Ruleset = { ...QUALIFIER_RULESET, ...LEGACY_POINTS };
-// Формат отбора турниров до 15 октября 2026: поля отрыва нет — решает любой неравный счёт.
+// Формат отбора турниров прошлой версии: поля отрыва нет — решает любой неравный счёт.
 const LEGACY_FORMAT: MatchFormat = { kind: 'fixed', tracks: 5 };
 
 function run(state: MatchState, ...commands: MatchCommand[]): MatchState {
@@ -205,7 +205,7 @@ describe('короткий отбор на N треков', () => {
     expect(winnerOf(state)).toBe(1);
   });
 
-  it('без поля отрыва (турниры до 15 октября 2026): ничья 2,1 : 2,1 решается первым неравным счётом', () => {
+  it('без поля отрыва (турнир прошлой версии): ничья 2,1 : 2,1 решается первым неравным счётом', () => {
     let state = playTrack(readyMatch({ ...QUALIFIER, format: LEGACY_FORMAT }), { artist: 0, title: 1 });
     state = playTrack(state, { artist: 1, title: 0 });
     state = playTracks(state, 3, {});
@@ -218,7 +218,7 @@ describe('короткий отбор на N треков', () => {
 });
 
 const OLD_RULE: [string, MatchFormat][] = [
-  ['без поля', LEGACY_FORMAT],
+  ['поля отрыва нет', LEGACY_FORMAT],
   ['«любой» (0)', { kind: 'fixed', tracks: 5, minLead: 0 }],
 ];
 
@@ -275,10 +275,31 @@ describe('отрыв после основной части', () => {
     expect(winnerOf(state)).toBe(0);
   });
 
-  it.each(OLD_RULE)('отрыв %s — прежнее правило: после пяти треков решает любой неравный счёт', (_, format) => {
+  it.each(OLD_RULE)('%s — прежнее правило: после пяти треков решает любой неравный счёт', (_, format) => {
     let state = playTrack(readyMatch({ ...QUALIFIER_RULESET, format }), { artist: 0 }); // 1,0 : 0
     state = playTracks(state, 4, {});
     expect(liveScore(state)).toEqual([10, 0]);
+    expect(winnerOf(state)).toBe(0);
+  });
+
+  it('отрыв 3,0: 2,5 после пяти треков мало, 3,5 — победа', () => {
+    const format: MatchFormat = { kind: 'fixed', tracks: 5, minLead: 30 };
+    let state = playTrack(readyMatch({ ...QUALIFIER_RULESET, format }), { artist: 0, title: 0 }); // 2,5 : 0
+    state = playTracks(state, 4, {});
+    expect(state.phase.kind).toBe('between_tracks');
+    state = playTrack(state, { artist: 0 }); // 3,5 : 0
+    expect(liveScore(state)).toEqual([35, 0]);
+    expect(state.closedTracks).toHaveLength(6);
+    expect(winnerOf(state)).toBe(0);
+  });
+
+  it('отрыв 1,0 при очках 0,9 и 1,2: 0,9 мало, 1,8 — победа', () => {
+    const format: MatchFormat = { kind: 'fixed', tracks: 5, minLead: 10 };
+    let state = playTrack(readyMatch({ ...QUALIFIER, format }), { artist: 0 }); // 0,9 : 0
+    state = playTracks(state, 4, {});
+    expect(state.phase.kind).toBe('between_tracks');
+    state = playTrack(state, { artist: 0 }); // 1,8 : 0
+    expect(liveScore(state)).toEqual([18, 0]);
     expect(winnerOf(state)).toBe(0);
   });
 });

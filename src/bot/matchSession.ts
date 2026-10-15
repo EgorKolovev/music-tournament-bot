@@ -100,8 +100,8 @@ function tx(session: MatchSession, userId: UserId): Texts['match'] {
 // 20 тыс. матчей равных игроков, угадывающих каждый компонент с вероятностью 15–35 %, при отрыве 2,0
 // 90 % матчей укладываются в 9–15 треков против 5–6 при прежнем правиле, а у слабых пар 1 % матчей
 // доходит примерно до 30 треков (docs/decisions/2026-10-15-qualifier-lead.md). Порог — нижняя граница,
-// ниже которой судья видит предупреждение, а не гарантия: примерно каждый десятый матч слабой пары
-// выходит за этот запас.
+// ниже которой судья видит предупреждение, а не гарантия: при отрыве 2,0 примерно каждый десятый матч
+// слабой пары выходит за этот запас. +10 подобрано под 2,0; при 3,0 запас занижен.
 export function minSongsForMatch(ruleset: Ruleset): number {
   return regularTracks(ruleset.format) + (minLeadOf(ruleset.format) > 0 ? 10 : 5);
 }
@@ -305,7 +305,7 @@ function lobbyText(session: MatchSession): string {
 function formatLines(texts: Texts['match']['judge'], ruleset: Ruleset): string[] {
   const { format } = ruleset;
   if (format.kind === 'first_to') return [texts.firstTo({ points: formatPoints(format.winThreshold) }), texts.limit({ tracks: format.trackLimit })];
-  // Без отрыва (турниры до 15 октября 2026 или «любой») — прежняя строка про ничью.
+  // Без отрыва (турниры прошлых версий или «любой») — прежняя строка про ничью.
   const lead = minLeadOf(format);
   return [texts.fixed({ tracks: format.tracks }), lead > 0 ? texts.fixedLead({ lead: formatPoints(lead) }) : texts.fixedTie];
 }

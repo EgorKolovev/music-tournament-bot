@@ -1171,6 +1171,14 @@ describe('Настройки по ходу турнира', () => {
     }
     expect(bot.state.config.qualifierRuleset).toEqual({ artistPoints: 9, titlePoints: 12, format: { kind: 'fixed', tracks: 7, minLead: 30 } });
     expect(bot.state.config.finalRuleset.format).toEqual({ kind: 'first_to', winThreshold: 90, trackLimit: 20 });
+    expect(panelText(bot, ORGANIZER)).toContain('📏 Отрыв в отборе: от 3,0');
+
+    // И в обратном порядке: отрыв не сбрасывает число треков.
+    for (const action of ['o:set:tracks', 'o:set:tracks:3', 'o:set:lead', 'o:set:lead:10']) {
+      bot.press(ORGANIZER, action);
+    }
+    expect(bot.state.config.qualifierRuleset.format).toEqual({ kind: 'fixed', tracks: 3, minLead: 10 });
+    expect(panelText(bot, ORGANIZER)).toContain('📏 Отрыв в отборе: от 1,0');
     expect(violations(bot.outLog)).toEqual([]);
   });
 

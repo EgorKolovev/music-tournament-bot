@@ -53,7 +53,7 @@ const withPoints = (ruleset: Ruleset, value: number): Ruleset => ({
 });
 
 // Формат отбора целиком: число треков и отрыв меняются по отдельности и не теряют друг друга.
-// У отбора формат всегда fixed; иначе — fixed с тем же числом треков.
+// У отбора формат всегда fixed; запасная ветка — только для типа, на деле она не срабатывает.
 function fixedFormat(ruleset: Ruleset): Extract<MatchFormat, { kind: 'fixed' }> {
   return ruleset.format.kind === 'fixed' ? ruleset.format : { kind: 'fixed', tracks: regularTracks(ruleset.format) };
 }

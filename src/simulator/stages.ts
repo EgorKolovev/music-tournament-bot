@@ -54,9 +54,9 @@ export const STAGES: Stage[] = [
     title: 'Отборочный матч',
     summary: 'Игроки и судья вместе; судья включает трек со своего телефона и отмечает ответы кнопками.',
     decisions: [
-      'Короткий матч: 5 треков, побеждает тот, у кого больше очков',
+      'Короткий матч: 5 треков, побеждает тот, у кого больше очков и нужный отрыв',
       `Исполнитель ${formatPoints(QUALIFIER_RULESET.artistPoints)} и название ${formatPoints(QUALIFIER_RULESET.titlePoints)} разыгрываются независимо; итог — после закрытия трека`,
-      `Отрыв меньше ${formatPoints(minLeadOf(QUALIFIER_RULESET.format))} после 5 треков — ещё по треку, пока кто-то не оторвётся; остановка только если кончились песни`,
+      `Отрыв меньше ${formatPoints(minLeadOf(QUALIFIER_RULESET.format))} после 5 треков — ещё по треку, пока кто-то не оторвётся на ${formatPoints(minLeadOf(QUALIFIER_RULESET.format))}; остановка только если кончились песни`,
       'Свои песни игрокам не выдаются, ответы видит только судья',
     ],
     engine: matchEngine(),
