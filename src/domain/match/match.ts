@@ -1,4 +1,4 @@
-import { regularTracks, type Ruleset } from './ruleset.ts';
+import { minLeadOf, regularTracks, type Ruleset } from './ruleset.ts';
 
 // Чистое ядро отборочного матча: состояние + команда → новое состояние или ошибка.
 // Ничего не знает о Telegram, базе и выборе песен (docs/architecture.md, разделы 1, 3, 8).
@@ -252,8 +252,9 @@ export function resolveAfterClose(closedTracks: readonly ClosedTrack[], ruleset:
   const decided: MatchPhase = { kind: 'decided', winner: leader, judgeConfirmed: false, playersConfirmed: [false, false] };
   const { format } = ruleset;
   if (format.kind === 'first_to' && Math.max(a, b) >= format.winThreshold) return decided;
-  // После основной части, включая дополнительные треки, первый неравный счёт завершает матч.
-  if (closedTracks.length >= regularTracks(format)) return decided;
+  // После основной части, включая дополнительные треки, матч завершает первый неравный счёт
+  // с нужным отрывом: в отборе — не меньше minLead (0 — любой), в финале — любой.
+  if (closedTracks.length >= regularTracks(format) && Math.abs(a - b) >= minLeadOf(format)) return decided;
   return { kind: 'between_tracks' };
 }
 

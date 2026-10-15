@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { QUALIFIER_RULESET, FINAL_RULESET } from '../domain/match/ruleset.ts';
+import { QUALIFIER_RULESET, FINAL_RULESET, minLeadOf } from '../domain/match/ruleset.ts';
 import { DEFAULT_INTAKE_RULES } from '../domain/submission/intake.ts';
 import { DEFAULT_FINAL_TARGET, finalPoolSize } from '../domain/submission/pools.ts';
 import { DEFAULT_DATABASE_URL } from '../storage/database.ts';
@@ -72,7 +72,8 @@ export function readSettings(env: Record<string, string | undefined>): BotSettin
       intakeRules: { ...DEFAULT_INTAKE_RULES, maxSubmissions: int(env.MAX_SUBMISSIONS, DEFAULT_INTAKE_RULES.maxSubmissions) },
       fragmentSec,
       finalPoolTarget: int(env.FINAL_POOL_TARGET, finalPoolSize(DEFAULT_FINAL_TARGET)),
-      qualifierRuleset: { ...QUALIFIER_RULESET, format: { kind: 'fixed', tracks } },
+      // Число треков — из окружения; отрыв и очки — из регламента по умолчанию.
+      qualifierRuleset: { ...QUALIFIER_RULESET, format: { kind: 'fixed', tracks, minLead: minLeadOf(QUALIFIER_RULESET.format) } },
       finalRuleset: FINAL_RULESET,
     },
   };
