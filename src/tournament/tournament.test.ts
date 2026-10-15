@@ -3,9 +3,11 @@ import { matchPlayers, qualifiedIds } from '../bot/drawSession.ts';
 import { admittedPlayers, isSongsOnly, readyForDraw } from '../bot/intakeSession.ts';
 import type { UserId } from '../bot/protocol.ts';
 import { openMatches, resolveSlot } from '../domain/bracket/bracket.ts';
+import { QUALIFIER_RULESET } from '../domain/match/ruleset.ts';
 import { acceptedSongs } from '../domain/submission/intake.ts';
 import { formatClock } from '../shared/text.ts';
 import { STYLE_IDS, styleOf, textsFor } from '../texts/index.ts';
+import { createBot, handleBotEvent } from './bot.ts';
 import { ORGANIZER, sender, TestBot, testConfig, violations } from './testBot.ts';
 import type { TournamentState } from './tournament.ts';
 
@@ -814,6 +816,7 @@ describe('Панель админа', () => {
     bot.command(ADMIN, '/game');
     expect(bot.lastText(ADMIN)).toContain('👥 Финалистов: 2');
     expect(bot.lastText(ADMIN)).toContain('🎯 Очки: исполнитель 1,0, название 1,5');
+    expect(bot.lastText(ADMIN)).toContain('📏 Отрыв в отборе: от 2,0');
   });
 
   it('«Открыть в панели» из уведомления переносит панель вниз, к карточке матча', () => {
@@ -1132,7 +1135,33 @@ describe('Настройки по ходу турнира', () => {
     expect(panelText(bot, ORGANIZER)).toContain('📅 Срок круга: без срока · 🔒 жеребьёвка уже началась');
   });
 
-  it('замок: сбор закрыт — лимит, фрагмент и пул; жеребьёвка — финалисты и срок; первый матч — треки и очки', () => {
+  it('отрыв в отборе: «любой» — значение 0, число треков и очки отрыв не теряют', () => {
+    const bot = new TestBot();
+    bot.open(ORGANIZER, 'settings');
+    expect(panelText(bot, ORGANIZER)).toContain('🎤 Треков в матче отбора: 5\n📏 Отрыв в отборе: от 2,0\n🎯 Очки');
+    bot.press(ORGANIZER, 'o:set:lead');
+    expect(panelText(bot, ORGANIZER)).toContain('Сейчас: от 2,0');
+    expect(panelText(bot, ORGANIZER)).toContain('«Любой» — прежнее правило: дополнительные треки только при ничьей.');
+    const panel = bot.chats[ORGANIZER]!.messages.find((m) => m.author === 'bot' && m.slot === 'o:phase');
+    const labels = panel?.author === 'bot' ? panel.buttons?.flat().map((b) => b.label) : [];
+    expect(labels).toEqual(['любой', '1,0', '✅ 2,0', '3,0', '⬅️ К настройкам']);
+
+    bot.press(ORGANIZER, 'o:set:lead:0');
+    expect(bot.toasts.at(-1)).toEqual({ to: ORGANIZER, text: '✅ Отрыв в отборе: любой' });
+    expect(bot.state.journal.at(-1)).toBe('Организатор: отрыв в отборе от 2,0 → любой');
+    expect(bot.state.config.qualifierRuleset.format).toEqual({ kind: 'fixed', tracks: 5, minLead: 0 });
+    expect(panelText(bot, ORGANIZER)).toContain('📏 Отрыв в отборе: любой');
+
+    // Число треков и очки меняют формат отбора, не сбрасывая отрыв.
+    for (const action of ['o:set:lead', 'o:set:lead:30', 'o:set:tracks', 'o:set:tracks:7', 'o:set:points', 'o:set:points:912']) {
+      bot.press(ORGANIZER, action);
+    }
+    expect(bot.state.config.qualifierRuleset).toEqual({ artistPoints: 9, titlePoints: 12, format: { kind: 'fixed', tracks: 7, minLead: 30 } });
+    expect(bot.state.config.finalRuleset.format).toEqual({ kind: 'first_to', winThreshold: 90, trackLimit: 20 });
+    expect(violations(bot.outLog)).toEqual([]);
+  });
+
+  it('замок: сбор закрыт — лимит, фрагмент и пул; жеребьёвка — финалисты и срок; первый матч — треки, отрыв и очки', () => {
     const bot = readyForQualifiers();
     bot.open(ORGANIZER, 'settings');
     const text = panelText(bot, ORGANIZER);
@@ -1154,7 +1183,13 @@ describe('Настройки по ходу турнира', () => {
     appointJudge(bot, matchId);
     expect(bot.state.matches[matchId]!.session.config.ruleset).toMatchObject({ artistPoints: 9, titlePoints: 12 });
     expect(panelText(bot, ORGANIZER)).toContain('🎯 Очки: исполнитель 0,9, название 1,2 · 🔒 матчи отбора уже начались');
+    expect(panelText(bot, ORGANIZER)).toContain('📏 Отрыв в отборе: от 2,0 · 🔒 матчи отбора уже начались');
     expect(bot.hasButton(ORGANIZER, 'o:set:tracks')).toBe(false);
+    expect(bot.hasButton(ORGANIZER, 'o:set:lead')).toBe(false);
+    // Кнопка из панели, открытой до первого матча: открытый матч играет с тем отрывом, что был.
+    press(bot, 'o:set:lead:0');
+    expect(bot.toasts.at(-1)?.text).toBe('🔒 Отрыв в отборе: матчи отбора уже начались');
+    expect(bot.state.matches[matchId]!.session.match.ruleset.format).toEqual({ kind: 'fixed', tracks: 5, minLead: 20 });
     expect(bot.hasButton(ORGANIZER, 'o:set:finalTo')).toBe(true);
   });
 
@@ -1203,6 +1238,55 @@ describe('Настройки по ходу турнира', () => {
     bot.command('1', '/start t_test');
     bot.press('1', 'r:name');
     expect(bot.lastText('1')).toContain('Исполнитель — 0,9 балла, название — 1,2.');
+  });
+});
+
+describe('Отрыв в отборе', () => {
+  // Основная часть матча со счётом 1,0 : 0,0: на первом треке исполнителя угадал первый игрок,
+  // остальные четыре трека не угадал никто.
+  function playLeadOfOne(bot: TestBot, matchId: string): { judge: UserId; players: [UserId, UserId] } {
+    const judge = appointJudge(bot, matchId);
+    const players = matchPlayers(bot.state.draw!, matchId)!;
+    const prefix = `m:${matchId}:`;
+    bot.press(judge, `${prefix}ready`);
+    bot.press(players[0], `${prefix}ready`);
+    bot.press(players[1], `${prefix}ready`);
+    bot.press(judge, `${prefix}issue`);
+    bot.press(judge, `${prefix}start`);
+    bot.press(judge, `${prefix}aw:a:0`);
+    bot.press(judge, `${prefix}close`);
+    for (let i = 0; i < 4; i++) {
+      bot.press(judge, `${prefix}issue`);
+      bot.press(judge, `${prefix}start`);
+      bot.press(judge, `${prefix}none`);
+    }
+    return { judge, players };
+  }
+
+  it('отрыв 2,0: 1,0 : 0,0 после пяти треков — матч идёт дальше, судья видит почему', () => {
+    const bot = readyForQualifiers();
+    const matchId = nextMatch(bot)!;
+    const { judge } = playLeadOfOne(bot, matchId);
+    const { match } = bot.state.matches[matchId]!.session;
+    expect(match.closedTracks).toHaveLength(5);
+    expect(match.phase.kind).toBe('between_tracks');
+    expect(bot.allText(judge)).toContain('Отрыв меньше 2,0 — дополнительный трек 1');
+    expect(bot.hasButton(judge, `m:${matchId}:issue`)).toBe(true);
+  });
+
+  it('турнир прошлой версии без поля отрыва: тот же счёт решает матч, повтор журнала даёт тот же итог', () => {
+    const config = testConfig({ qualifierRuleset: { ...QUALIFIER_RULESET, format: { kind: 'fixed', tracks: 5 } } });
+    const bot = readyForQualifiers(new TestBot(config));
+    const matchId = nextMatch(bot)!;
+    const { judge, players } = playLeadOfOne(bot, matchId);
+    expect(bot.state.matches[matchId]!.session.match.phase).toMatchObject({ kind: 'decided', winner: 0 });
+    expect(bot.allText(judge)).not.toContain('Отрыв');
+    confirmAll(bot, `m:${matchId}:`, judge, players);
+    expect(bot.state.draw!.results[matchId]).toBe(players[0]);
+
+    let replayed = createBot(config, Date.parse('2026-10-10T10:00:00Z')).state;
+    for (const event of bot.events) replayed = handleBotEvent(replayed, event).state;
+    expect(replayed).toEqual(bot.bot);
   });
 });
 

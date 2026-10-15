@@ -1,6 +1,6 @@
 import { render as renderIntake } from '../bot/intakeSession.ts';
 import type { OutgoingMessage, UserId } from '../bot/protocol.ts';
-import { formatPoints, type Ruleset } from '../domain/match/ruleset.ts';
+import { formatPoints, type MatchFormat, minLeadOf, regularTracks, type Ruleset } from '../domain/match/ruleset.ts';
 import { activeCount, recutAll } from '../domain/submission/intake.ts';
 import { plural } from '../shared/text.ts';
 import { scope, toast } from './helpers.ts';
@@ -11,7 +11,7 @@ import type { Step, TournamentConfig, TournamentState } from './state.ts';
 // Сбор хранит свою копию лимита песен, фрагмента, пула и числа финалистов — меняются обе разом.
 // Изменение — обычное нажатие кнопки в журнале: повтор журнала приходит к тем же настройкам.
 
-export type SettingKey = 'songs' | 'fragment' | 'pool' | 'finalists' | 'round' | 'tracks' | 'points' | 'finalTo';
+export type SettingKey = 'songs' | 'fragment' | 'pool' | 'finalists' | 'round' | 'tracks' | 'lead' | 'points' | 'finalTo';
 
 interface Setting {
   icon: string;
@@ -51,6 +51,12 @@ const withPoints = (ruleset: Ruleset, value: number): Ruleset => ({
   artistPoints: Math.floor(value / 100),
   titlePoints: value % 100,
 });
+
+// Формат отбора целиком: число треков и отрыв меняются по отдельности и не теряют друг друга.
+// У отбора формат всегда fixed; иначе — fixed с тем же числом треков.
+function fixedFormat(ruleset: Ruleset): Extract<MatchFormat, { kind: 'fixed' }> {
+  return ruleset.format.kind === 'fixed' ? ruleset.format : { kind: 'fixed', tracks: regularTracks(ruleset.format) };
+}
 
 const SETTINGS: Record<SettingKey, Setting> = {
   songs: {
@@ -142,10 +148,27 @@ const SETTINGS: Record<SettingKey, Setting> = {
     show: (v) => String(v),
     hint: 'Застывает с первым матчем отбора — иначе пары играли бы по разным правилам.',
     lock: beforeMatches,
-    apply: (state, v) => ({
-      ...state,
-      config: { ...state.config, qualifierRuleset: { ...state.config.qualifierRuleset, format: { kind: 'fixed', tracks: v } } },
-    }),
+    apply: (state, v) => {
+      const ruleset = state.config.qualifierRuleset;
+      return { ...state, config: { ...state.config, qualifierRuleset: { ...ruleset, format: { ...fixedFormat(ruleset), tracks: v } } } };
+    },
+  },
+  lead: {
+    icon: '📏',
+    name: 'Отрыв в отборе',
+    options: [0, 10, 20, 30],
+    value: (config) => minLeadOf(config.qualifierRuleset.format),
+    show: (v) => (v === 0 ? 'любой' : `от ${formatPoints(v)}`),
+    short: (v) => (v === 0 ? 'любой' : formatPoints(v)),
+    hint: [
+      'Сколько баллов отрыва нужно для победы, когда основные треки сыграны. Меньше — пара играет ещё по треку, пока отрыв не дойдёт до нужного; лимита нет, матч остановится, только если кончатся песни.',
+      '«Любой» — прежнее правило: дополнительные треки только при ничьей. С отрывом матчи длиннее, песен на матч нужно больше. Финал не меняется. Застывает с первым матчем отбора — иначе пары играли бы по разным правилам.',
+    ].join('\n\n'),
+    lock: beforeMatches,
+    apply: (state, v) => {
+      const ruleset = state.config.qualifierRuleset;
+      return { ...state, config: { ...state.config, qualifierRuleset: { ...ruleset, format: { ...fixedFormat(ruleset), minLead: v } } } };
+    },
   },
   points: {
     icon: '🎯',

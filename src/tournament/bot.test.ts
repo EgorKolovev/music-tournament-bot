@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Outgoing, OutgoingMessage, UserId } from '../bot/protocol.ts';
+import { QUALIFIER_RULESET, type Ruleset } from '../domain/match/ruleset.ts';
 import { createBot, fromSnapshot, handleBotEvent, pendingAudio, type BotState } from './bot.ts';
 import { ORGANIZER, sender, TestBot, testConfig, violations } from './testBot.ts';
 
@@ -64,6 +65,21 @@ describe('Несколько турниров', () => {
     bot.send({ kind: 'button', from: sender(ADMIN), data: 't:list' });
     expect(bot.toasts.at(-1)).toEqual({ to: ADMIN, text: 'Турнирами управляет организатор' });
     expect(violations(bot.outLog)).toEqual([]);
+  });
+
+  it('новый турнир берёт отрыв у текущего — у турнира прошлой версии это «любой»', () => {
+    // Турнир прошлой версии: в формате отбора нет поля отрыва.
+    const legacy: Ruleset = { ...QUALIFIER_RULESET, format: { kind: 'fixed', tracks: 5 } };
+    const bot = new TestBot(testConfig({ qualifierRuleset: legacy }));
+    bot.press(ORGANIZER, 't:list');
+    bot.press(ORGANIZER, 't:new');
+    bot.text(ORGANIZER, 'Пробный');
+    expect(bot.lastText(ORGANIZER)).toContain('📏 Отрыв в отборе: любой');
+    expect(bot.lastText(ORGANIZER)).not.toContain('NaN');
+    bot.press(ORGANIZER, 't:create');
+
+    expect(bot.bot.active).toBe(2);
+    expect(bot.state.config.qualifierRuleset.format).toEqual({ kind: 'fixed', tracks: 5 });
   });
 
   it('у турнира на паузе кнопки, ссылка и сообщения отвечают паузой; в активный — по его ссылке', () => {

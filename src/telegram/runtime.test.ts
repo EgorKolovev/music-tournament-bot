@@ -3,8 +3,10 @@ import type { InputFile } from 'grammy';
 import type { InlineKeyboardMarkup, Update } from 'grammy/types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { matchPlayers } from '../bot/drawSession.ts';
+import { minLeadOf, type Ruleset } from '../domain/match/ruleset.ts';
 import { importTournament, Store, type TournamentDump } from '../storage/store.ts';
 import { testDatabase, type TestDatabase } from '../storage/testDatabase.ts';
+import { settingLine } from '../tournament/settings.ts';
 import { ORGANIZER, testConfig } from '../tournament/testBot.ts';
 import { buttonUpdate, FakeApi, privateChat, silentLog, textUpdate, user } from './fakeApi.ts';
 import { Runtime } from './runtime.ts';
@@ -265,6 +267,63 @@ describe('Runtime на PostgreSQL (PGlite)', () => {
     const restarted = await boot(db);
     expect(restarted.runtime.state.config.qualifierRuleset).toMatchObject(legacy);
     expect(restarted.runtime.state.config.finalRuleset).toMatchObject(legacy);
+  });
+
+  it('новая версия с отрывом 2,0 по умолчанию не меняет правило уже начатого турнира', async () => {
+    const db = database();
+    const base = testConfig();
+    // Турнир прошлой версии: в формате отбора нет поля отрыва.
+    const legacy: Ruleset = { ...base.qualifierRuleset, format: { kind: 'fixed', tracks: 5 } };
+    await boot(db, new FakeApi(), { ...base, qualifierRuleset: legacy });
+
+    const restarted = await boot(db);
+    const { format } = restarted.runtime.state.config.qualifierRuleset;
+    expect(format).toEqual({ kind: 'fixed', tracks: 5 });
+    expect(minLeadOf(format)).toBe(0);
+    expect(settingLine(restarted.runtime.state, 'lead')).toBe('📏 Отрыв в отборе: любой');
+  });
+
+  it('сбой посреди матча прошлой версии: после перезапуска новой версией матч доигрывается по прежнему правилу', async () => {
+    const db = database();
+    const base = testConfig();
+    const legacy: Ruleset = { ...base.qualifierRuleset, format: { kind: 'fixed', tracks: 5 } };
+    const { api, store, runtime } = await boot(db, new FakeApi(), { ...base, qualifierRuleset: legacy });
+    await toQualifiers(api, store, runtime);
+
+    const matchId = playable(runtime);
+    const [a, b] = matchPlayers(runtime.state.draw!, matchId)!.map(Number) as [number, number];
+    await runtime.receive(textUpdate(user(7, 'Судья'), `/start judge_${matchId}`));
+    await press(api, runtime, 7, 'r:name');
+    await press(api, runtime, 7, 'r:accept');
+    await press(api, runtime, 7, `d:accept:${matchId}`);
+    await press(api, runtime, a, `d:confirmJudge:${matchId}`);
+    await press(api, runtime, b, `d:confirmJudge:${matchId}`);
+
+    // Четыре трека из пяти: 1,0 : 0,0.
+    const p = `m:${matchId}:`;
+    await press(api, runtime, 7, `${p}ready`);
+    await press(api, runtime, a, `${p}ready`);
+    await press(api, runtime, b, `${p}ready`);
+    await press(api, runtime, 7, `${p}issue`);
+    await press(api, runtime, 7, `${p}start`);
+    await press(api, runtime, 7, `${p}aw:a:0`);
+    await press(api, runtime, 7, `${p}close`);
+    for (let i = 0; i < 3; i++) {
+      await press(api, runtime, 7, `${p}issue`);
+      await press(api, runtime, 7, `${p}start`);
+      await press(api, runtime, 7, `${p}none`);
+    }
+    // Падение процесса: без снимка при остановке, только журнал. Новая версия — с отрывом 2,0 по умолчанию.
+    const restarted = await boot(db, api);
+    expect(restarted.runtime.state.matches[matchId]!.session.match.closedTracks).toHaveLength(4);
+
+    await press(api, restarted.runtime, 7, `${p}issue`);
+    await press(api, restarted.runtime, 7, `${p}start`);
+    await press(api, restarted.runtime, 7, `${p}none`);
+    // Матч играет по регламенту, с которым открылся: 1,0 : 0,0 после пяти треков решает его.
+    expect(restarted.runtime.state.matches[matchId]!.session.match.phase).toMatchObject({ kind: 'decided', winner: 0 });
+    const judgeTexts = api.calls.filter((c) => c.params.chat_id === '7').map((c) => String(c.params.text ?? c.params.caption ?? ''));
+    expect(judgeTexts.join('\n')).not.toContain('Отрыв');
   });
 
   it('бэкап организатору: ZIP с тем же, что сохраняет db:backup, и из него поднимается бот', async () => {
