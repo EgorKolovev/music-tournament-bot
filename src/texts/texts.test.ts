@@ -5,7 +5,7 @@ import { STYLE_IDS, styleOf, textsFor } from './index.ts';
 const ANY = new Proxy({}, { get: () => 3 });
 
 // У каждого параметра своя метка из четырёх цифр — по ней видно, дошёл ли он до текста.
-const MARKS = ['name', 'match', 'n', 'max', 'accepted', 'count', 'total', 'title', 'judge', 'opponent', 'until', 'date', 'winner', 'score', 'a', 'b', 'by', 'start', 'sec', 'label', 'number', 'round', 'points', 'tracks', 'artist', 'p0', 'p1', 'progress', 'champion', 'names', 'reason', 'duration', 'latest', 'file', 'link', 'contact', 'pair', 'command', 'answers', 'available', 'needed', 'played', 'of', 'changed', 'kept', 'from', 'done', 'all', 'phase', 'mark', 'text', 'rejected', 'max'];
+const MARKS = ['name', 'match', 'n', 'max', 'accepted', 'count', 'total', 'title', 'judge', 'opponent', 'until', 'date', 'winner', 'score', 'a', 'b', 'by', 'start', 'sec', 'label', 'number', 'round', 'points', 'tracks', 'artist', 'p0', 'p1', 'progress', 'champion', 'names', 'reason', 'duration', 'latest', 'file', 'link', 'contact', 'pair', 'command', 'answers', 'available', 'needed', 'played', 'of', 'changed', 'kept', 'from', 'done', 'all', 'phase', 'mark', 'text', 'rejected', 'max', 'lead'];
 const MARKED = new Proxy(
   {},
   { get: (_, key) => (typeof key === 'string' && MARKS.includes(key) ? 1000 + MARKS.indexOf(key) : 3) },

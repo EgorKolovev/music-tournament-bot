@@ -2,7 +2,7 @@ import { plural } from '../../shared/text.ts';
 import { pickWith } from '../variants.ts';
 
 // Матч — отборочный и финальный: панель судьи и сообщение игроку о ходе матча.
-// points — уже отформатированные баллы («1,5»), score — строка счёта «Аня 2,5 : 1,0 Борис».
+// points и lead — уже отформатированные баллы («1,5», «2,0»), score — строка счёта «Аня 2,5 : 1,0 Борис».
 // Номер трека или матча у фраз, которые повторяются от трека к треку и от матча к матчу, — только для
 // выбора варианта: в стилях на новом треке или матче выпадает другой, а перерисовка панели его не меняет.
 
@@ -11,6 +11,8 @@ export const match = {
     title: ({ final, match }: { final: boolean; match: string }) => `${final ? 'Финал' : 'Отбор'} · матч №${match} · ты судья`,
     fixed: ({ tracks }: { tracks: number }) => `${tracks} ${plural(tracks, 'трек', 'трека', 'треков')}, побеждает тот, кто наберёт больше`,
     fixedTie: 'При ничьей — ещё по треку, пока кто-то не вырвется вперёд',
+    // Отбор с отрывом (настройка «📏 Отрыв в отборе»); без отрыва — fixedTie.
+    fixedLead: ({ lead }: { lead: string }) => `При отрыве меньше ${lead} — ещё по треку, пока кто-то не оторвётся на ${lead}`,
     firstTo: ({ points }: { points: string }) => `Играем до ${points}: кто первым наберёт столько и будет впереди, тот и победил`,
     limit: ({ tracks }: { tracks: number }) => `Не больше ${tracks} ${plural(tracks, 'трека', 'треков', 'треков')}; при ничьей — ещё по треку, пока кто-то не вырвется вперёд`,
     points: ({ artist, title }: { artist: string; title: string }) => `За исполнителя ${artist} · за название ${title}`,
@@ -34,6 +36,8 @@ export const match = {
     startHint: pickWith<{ n: number }>('Аудио и ответы — выше. Включи трек и нажми «Начать трек».'),
     played: ({ played, of }: { played: number; of: number }) => `Сыграно ${played} из ${of}`,
     extra: ({ n }: { n: number }) => `Ничья — дополнительный трек ${n}`,
+    // После основной части при отрыве: счёт может быть и неравным, поэтому не «ничья».
+    extraLead: ({ n, lead }: { n: number; lead: string }) => `Отрыв меньше ${lead} — дополнительный трек ${n}`,
     winner: ({ name }: { name: string }) => `🏁 Победа: ${name}`,
     waitConfirm: ({ names }: { names: string }) => `Ждём подтверждения: ${names}`,
     confirm: pickWith<{ match: string }>('Подтверди результат матча.'),

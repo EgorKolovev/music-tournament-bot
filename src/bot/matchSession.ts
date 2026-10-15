@@ -11,7 +11,7 @@ import {
   type MatchState,
   type PlayerSlot,
 } from '../domain/match/match.ts';
-import { formatPoints, regularTracks, type Ruleset } from '../domain/match/ruleset.ts';
+import { formatPoints, minLeadOf, regularTracks, type Ruleset } from '../domain/match/ruleset.ts';
 import { eligibleSongs, pickLeastUsed, type PoolSong } from '../domain/selection/pickSong.ts';
 import { seededRandom } from '../shared/random.ts';
 import { formatClock } from '../shared/text.ts';
@@ -96,9 +96,14 @@ function tx(session: MatchSession, userId: UserId): Texts['match'] {
   return textsOf(session.config.styles, userId).match;
 }
 
-// Запас на основную часть матча и несколько дополнительных треков при ничьей.
+// Запас на основную часть матча и дополнительные треки. С отрывом матч заметно длиннее: в симуляции
+// 20 тыс. матчей равных игроков, угадывающих каждый компонент с вероятностью 15–35 %, при отрыве 2,0
+// 90 % матчей укладываются в 9–15 треков против 5–6 при прежнем правиле, а у слабых пар 1 % матчей
+// доходит примерно до 30 треков (docs/decisions/2026-10-15-qualifier-lead.md). Порог — нижняя граница,
+// ниже которой судья видит предупреждение, а не гарантия: примерно каждый десятый матч слабой пары
+// выходит за этот запас.
 export function minSongsForMatch(ruleset: Ruleset): number {
-  return regularTracks(ruleset.format) + 5;
+  return regularTracks(ruleset.format) + (minLeadOf(ruleset.format) > 0 ? 10 : 5);
 }
 
 export function openMatchSession(config: MatchSessionConfig): SessionStep {
@@ -299,8 +304,10 @@ function lobbyText(session: MatchSession): string {
 
 function formatLines(texts: Texts['match']['judge'], ruleset: Ruleset): string[] {
   const { format } = ruleset;
-  if (format.kind === 'fixed') return [texts.fixed({ tracks: format.tracks }), texts.fixedTie];
-  return [texts.firstTo({ points: formatPoints(format.winThreshold) }), texts.limit({ tracks: format.trackLimit })];
+  if (format.kind === 'first_to') return [texts.firstTo({ points: formatPoints(format.winThreshold) }), texts.limit({ tracks: format.trackLimit })];
+  // Без отрыва (турниры до 15 октября 2026 или «любой») — прежняя строка про ничью.
+  const lead = minLeadOf(format);
+  return [texts.fixed({ tracks: format.tracks }), lead > 0 ? texts.fixedLead({ lead: formatPoints(lead) }) : texts.fixedTie];
 }
 
 function answersText(session: MatchSession, number: number, song: LibrarySong): string {
@@ -320,8 +327,8 @@ function awardsLine(session: MatchSession, awards: { artist: PlayerSlot | null; 
   return judgeTexts(session).awards({ artist: name(awards.artist), title: name(awards.title) });
 }
 
-// progress — строки хода матча («Сыграно 2 из 3») для текущей панели: они идут до слова
-// о неугаданном треке, чтобы оно (а в стиле «Диско» — голос) стояло в конце.
+// progress — строки хода матча («Сыграно 2 из 3», «Отрыв меньше 2,0 — дополнительный трек 1») для
+// текущей панели: они идут до слова о неугаданном треке, чтобы оно (а в стиле «Диско» — голос) стояло в конце.
 function pastTrackText(session: MatchSession, index: number, progress: string[] = []): string {
   const track = session.issued[index]!;
   const texts = judgeTexts(session);
@@ -356,9 +363,12 @@ function currentPanelText(session: MatchSession): string {
   } else {
     const played = match.closedTracks.length;
     const regular = regularTracks(config.ruleset.format);
+    const lead = minLeadOf(config.ruleset.format);
+    // После основной части с отрывом счёт может быть и неравным — тогда это не «ничья».
+    const extra = (n: number) => (lead > 0 ? texts.extraLead({ n, lead: formatPoints(lead) }) : texts.extra({ n }));
     const progress =
       phase.kind === 'between_tracks'
-        ? [played < regular ? texts.played({ played, of: regular }) : texts.extra({ n: played - regular + 1 })]
+        ? [played < regular ? texts.played({ played, of: regular }) : extra(played - regular + 1)]
         : [];
     lines.push(pastTrackText(session, session.issued.length - 1, progress));
     lines.push(...outcomeLines(session));
